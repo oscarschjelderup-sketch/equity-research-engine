@@ -51,6 +51,7 @@ class AnalysisResult:
     shares_real: float | None = None  # actual shares outstanding (units); ``shares`` is FX-adjusted
     scenarios: list = field(default_factory=list)  # list[ScenarioResult]
     scenario_weighted_value: float | None = None
+    oil: Any = None  # OilSensitivity from a companion study, when the config points at a factsheet
     reverse_dcf: Any = None  # ReverseDcf
     crosscheck: Any = None  # CrossCheck
     multiple_history: Any = None  # MultipleHistory
@@ -154,6 +155,7 @@ class AnalysisResult:
             "multiple_history": self.multiple_history.as_dict() if self.multiple_history is not None else None,
             "shares_effective": self.shares,
             "forward_multiples": frame(self.forward_multiples), "relative_performance": frame(rel), "prices": prices,
+            "oil_sensitivity": to_dict(self.oil) if self.oil is not None else None,
             "narrative": self.narrative, "narrative_mode": self.narrative_mode, "config": to_dict(self.cfg), "warnings": self.warnings,
         })
 

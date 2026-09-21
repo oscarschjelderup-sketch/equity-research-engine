@@ -8,6 +8,7 @@ venv/
 .cache/
 output/
 !examples/**
+examples/*/charts/
 ~$*
 *.tmp
 .DS_Store

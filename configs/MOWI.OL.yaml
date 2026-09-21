@@ -8,6 +8,11 @@ index_name: OSEBX
 sector_label: null
 footprint: null
 business_model: null
+# Oil sensitivity measured by the companion study (oslo-oil-sensitivity), refreshed with
+#   oilbeta stock MOWI.OL --json <this repo>/oil/MOWI.OL.json
+# Risk-section context only: it never enters the forecast, the WACC or the DCF.
+oil_sensitivity: oil/MOWI.OL.json
+
 units_label: null          # e.g. NOKm / USDm (defaults to <currency>m)
 
 peers:                     # tickers must exist on Yahoo Finance

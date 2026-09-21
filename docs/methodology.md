@@ -175,6 +175,37 @@ model breaks. The findings became guardrails:
   value above 95% of enterprise value.
 * **`NOT RATED`**: when the equity value is not positive no target price is set.
 
+## 10b. Oil sensitivity (optional risk context)
+
+A case config may point at a factsheet from the companion study
+[oslo-oil-sensitivity](https://github.com/oscarschjelderup-sketch/oslo-oil-sensitivity):
+
+```yaml
+oil_sensitivity: oil/MOWI.OL.json     # written by: oilbeta stock MOWI.OL --json oil/MOWI.OL.json
+```
+
+The file is a versioned JSON document (`oilbeta.stock/1`); the two projects share the schema, not an
+import, so either can be rewritten as long as the contract holds. It carries two betas from a weekly
+two-factor regression with Newey-West intervals — the *total* oil beta (the move per 1% move in Brent
+through every channel) and the *partial* one (what is left once the index is held fixed) — plus
+scenarios, the share of weekly variance oil explains, and the study's own caveats.
+
+The engine uses it in exactly one place: the first bullet of the risk section, which then states a
+measured exposure with its interval instead of a generic sentence about commodity prices. The
+sentence follows the numbers, including when they say there is nothing there:
+
+| What the numbers say | What the deck says |
+|---|---|
+| Total beta interval excludes zero | "a 20% fall in Brent has come with an 8.4% fall in the share (5.2% to 11.5% interval)" |
+| Total interval spans zero | "no measurable direct exposure — an interval of −0.04 to +0.09 that spans zero" |
+| Partial beta significantly negative | "a higher oil price has been a cost" |
+| Partial beta not significant | "the exposure it has is the index's own, not the company's" |
+
+**It is not a driver.** It never enters the forecast, the WACC or the DCF, and a test asserts that a
+case runs to identical numbers with and without the file. An oil beta measures co-movement on past
+returns; turning it into a discount-rate adjustment would claim far more than the study supports. A
+missing or unreadable file produces a warning, not a failure.
+
 ## 11. Known limitations
 
 * Yahoo Finance carries ~4 annual periods and no segment data; longer history or segments come from analyst files.

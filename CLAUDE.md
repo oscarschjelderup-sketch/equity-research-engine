@@ -29,6 +29,9 @@ eqr screen SATS.OL KID.OL BOUV.OL MOWI.OL
 - The owner's Excel is Norwegian-locale: avoid `TEXT()` with format codes in formulas.
 - `output/` and `.cache/` are git-ignored; `examples/` and `docs/img/` hold the committed showcase outputs — refresh
   them when outputs change.
+- `oil/*.json` are factsheets from the companion oslo-oil-sensitivity study (schema `oilbeta.stock/1`), refreshed with
+  `oilbeta stock <TICKER> --json oil/<TICKER>.json`. They feed the risk section only: never let one touch the forecast,
+  the WACC or the DCF — `test_oil_context_never_moves_a_valuation` enforces it.
 - `notes/` is private (git-ignored): the owner's Norwegian interview guide lives there.
 - Before trusting a modelling change, re-run the sweep idea: many tickers with default configs, look for crashes, negative
   values and extreme upsides. Sector refusals and cautions live in `src/eqr/errors.py`.

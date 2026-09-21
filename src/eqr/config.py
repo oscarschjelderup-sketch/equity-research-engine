@@ -44,6 +44,9 @@ class Assumptions:
     mid_year_convention: bool = False
     terminal_method: str = "gordon"  # gordon | value_driver (NOPAT x (1 - g/RONIC) / (WACC - g))
     ronic: float | None = None  # return on new invested capital for value_driver; None -> WACC + 2pp
+    valuation_date: str | None = None  # ISO date the DCF is valued at; None -> the run date
+    stub_period: bool = True  # discount to the valuation date and count year-1 cash flow from the latest balance sheet
+    latest_balance_sheet: bool = True  # net debt from the latest quarterly balance sheet instead of the last annual one
     growth_cap: float = 0.20
     growth_floor: float = -0.05
     use_consensus_growth: bool = True
@@ -54,7 +57,7 @@ class WaccConfig:
     risk_free: float = 0.038
     equity_risk_premium: float = 0.05
     beta: float | None = None
-    beta_method: str = "regression"  # regression | yahoo | manual
+    beta_method: str = "regression"  # regression | peers (bottom-up: unlevered peer median, relevered) | yahoo | manual
     beta_years: int = 3
     min_r2: float = 0.10  # regression beta is rejected below this R2 (falls back to Yahoo beta)
     blume_adjust: bool = True
@@ -78,6 +81,7 @@ class RecommendationConfig:
     roll_forward: bool = True  # 12-month target price: fair value today x (1 + cost of equity) - expected dividend
     roll_forward_months: int = 12
     rating_on_total_return: bool = True  # rate on (target price + dividend) / price - 1
+    dividend_source: str = "indicated"  # indicated = Yahoo's indicated annual dividend | last_paid = last fiscal year's cash dividend
 
 
 @dataclass
@@ -166,6 +170,7 @@ class CompanyConfig:
     brand: BrandConfig = field(default_factory=BrandConfig)
     narrative: dict[str, Any] = field(default_factory=dict)
     history_csv: str | None = None
+    oil_sensitivity: str | None = None  # path to an oilbeta.stock/1 factsheet; risk context only, never a driver
     event_title: str | None = None
     date_label: str | None = None
     sources_note: str = "Company reports, Yahoo Finance, Equity Research Engine estimates"
@@ -322,12 +327,15 @@ assumptions:
   mid_year_convention: false
   terminal_method: gordon  # gordon | value_driver (NOPAT x (1 - g/RONIC) / (WACC - g))
   ronic: null              # return on new capital for value_driver; null -> WACC + 2pp
+  valuation_date: null     # null = today; the DCF is discounted to this date (stub period)
+  stub_period: true        # count year-1 cash flow only after the latest balance sheet date
+  latest_balance_sheet: true   # net debt from the latest quarterly balance sheet
 
 wacc:
   risk_free: 0.038
   equity_risk_premium: 0.05
   beta: null               # null -> regression vs index (Blume adjusted)
-  beta_method: regression
+  beta_method: regression  # regression | peers (bottom-up from the peer group) | yahoo | manual
   size_premium: auto       # auto = by market cap (0 / 0.75% / 1.5% / 2.5%), or a number such as 0.01
   cost_of_debt_pretax: null
   debt_weight: null        # null -> market weights

@@ -1,0 +1,121 @@
+{
+  "schema": "oilbeta.stock/1",
+  "generated_utc": "2026-09-21T16:28:33+00:00",
+  "source": {
+    "study": "oslo-oil-sensitivity",
+    "version": "0.1.0",
+    "url": "https://github.com/oscarschjelderup-sketch/oslo-oil-sensitivity",
+    "method": "r = a + b_mkt*index + b_oil*Brent on Friday-to-Friday log returns, Newey-West standard errors; the total beta orthogonalises the index against oil first, so it is the effect through every channel"
+  },
+  "ticker": "MOWI.OL",
+  "name": "Mowi",
+  "sector": "Seafood",
+  "market_index": "Oslo Børs Benchmark Index",
+  "oil_series": "Brent front-month (USD)",
+  "sample": {
+    "start": "2007-08-10",
+    "end": "2026-09-11",
+    "frequency": "weekly"
+  },
+  "windows": {
+    "full_history": {
+      "weeks": 994,
+      "beta_market": 0.8994,
+      "beta_oil_partial": -0.1068,
+      "partial_lo": -0.1728,
+      "partial_hi": -0.0408,
+      "partial_p": 0.0015,
+      "beta_oil_total": 0.151,
+      "total_lo": 0.069,
+      "total_hi": 0.2329,
+      "total_p": 0.0003,
+      "variance_explained_by_oil": 0.024,
+      "scenarios": [
+        {
+          "brent": -0.2,
+          "expected": -0.0331,
+          "lo": -0.0506,
+          "hi": -0.0153,
+          "p_same_sign": 0.7513
+        },
+        {
+          "brent": -0.1,
+          "expected": -0.0158,
+          "lo": -0.0242,
+          "hi": -0.0072,
+          "p_same_sign": 0.6257
+        },
+        {
+          "brent": 0.1,
+          "expected": 0.0145,
+          "lo": 0.0066,
+          "hi": 0.0224,
+          "p_same_sign": 0.614
+        },
+        {
+          "brent": 0.2,
+          "expected": 0.0279,
+          "lo": 0.0127,
+          "hi": 0.0434,
+          "p_same_sign": 0.7104
+        }
+      ]
+    },
+    "last_5_years": {
+      "weeks": 260,
+      "beta_market": 0.936,
+      "beta_oil_partial": -0.1183,
+      "partial_lo": -0.1895,
+      "partial_hi": -0.0471,
+      "partial_p": 0.0012,
+      "beta_oil_total": 0.0256,
+      "total_lo": -0.037,
+      "total_hi": 0.0882,
+      "total_p": 0.4215,
+      "variance_explained_by_oil": 0.0016,
+      "scenarios": [
+        {
+          "brent": -0.2,
+          "expected": -0.0057,
+          "lo": -0.0195,
+          "hi": 0.0083,
+          "p_same_sign": 0.5648
+        },
+        {
+          "brent": -0.1,
+          "expected": -0.0027,
+          "lo": -0.0093,
+          "hi": 0.0039,
+          "p_same_sign": 0.5307
+        },
+        {
+          "brent": 0.1,
+          "expected": 0.0024,
+          "lo": -0.0035,
+          "hi": 0.0084,
+          "p_same_sign": 0.5278
+        },
+        {
+          "brent": 0.2,
+          "expected": 0.0047,
+          "lo": -0.0067,
+          "hi": 0.0162,
+          "p_same_sign": 0.553
+        }
+      ]
+    }
+  },
+  "caveats": [
+    "An oil beta is co-movement with a sign, not causation: Brent moves for demand as well as supply reasons.",
+    "Outside energy most of the oil beta is a demand-shock beta — it reflects the news that moved oil, not the oil price.",
+    "The interval covers uncertainty about the expected move only. P(same sign) is how often the move actually goes that way.",
+    "Estimated on a universe of today's listings, so delisted companies are missing (survivorship)."
+  ],
+  "headline_window": "last_5_years",
+  "sector_context": {
+    "name": "Seafood",
+    "beta_oil_total": 0.1143,
+    "rank": 10,
+    "of": 10
+  }
+}

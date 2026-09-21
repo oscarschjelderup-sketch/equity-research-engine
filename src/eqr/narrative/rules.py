@@ -40,6 +40,40 @@ def _median(stats: pd.DataFrame, key: str) -> float | None:
     return float(v) if _ok(v) else None
 
 
+def _oil_risk(oil, pccy: str) -> str:
+    """One measured sentence about oil exposure — including when the measurement is that there is none."""
+    spans_zero = oil.total_lo <= 0 <= oil.total_hi
+    partial_sig = oil.partial_p < 0.05
+    where = f"{oil.weeks} weeks to {oil.sample.get('end', '')}"
+
+    if partial_sig and oil.beta_partial < 0:
+        cost = (f"a higher oil price has been a cost: holding the index fixed, the share has moved "
+                f"{oil.beta_partial:+.2f}% per 1% move in Brent")
+    elif partial_sig and oil.beta_partial > 0:
+        cost = f"that is oil risk beyond the index's own ({oil.beta_partial:+.2f}% per 1%, holding the index fixed)"
+    else:
+        cost = "the exposure it has is the index's own, not the company's"
+
+    if spans_zero:
+        return (f"**Oil price:** no measurable direct exposure — the share has moved {oil.beta_total:+.2f}% per 1% move in "
+                f"Brent over the {oil.window}, an interval of {oil.total_lo:+.2f} to {oil.total_hi:+.2f} that spans zero "
+                f"({where}); {cost}")
+
+    down = oil.downside
+    if down is None:
+        return (f"**Oil price:** the share has moved {oil.beta_total:+.2f}% per 1% move in Brent over the {oil.window} "
+                f"(interval {oil.total_lo:+.2f} to {oil.total_hi:+.2f}, {where}); {cost}")
+
+    direction = "fall" if down.expected < 0 else "rise"
+    band = sorted((abs(down.lo), abs(down.hi)))
+    hit = ">99" if down.p_same_sign > 0.995 else format(down.p_same_sign * 100, ".0f")
+    moved = f"{abs(down.expected):.1%}"
+    article = "an" if moved[0] in "8" else "a"          # "an 8.4% fall", "a 10.3% fall"
+    return (f"**Oil price:** a {abs(down.brent):.0%} fall in Brent has come with {article} {moved} {direction} in "
+            f"the share ({band[0]:.1%} to {band[1]:.1%} interval, {where}); {cost}. Oil explains "
+            f"{oil.variance_explained:.0%} of weekly variance and the move goes that way {hit}% of the time")
+
+
 def build_rule_narrative(result) -> dict[str, Any]:
     r = result
     cfg = r.cfg
@@ -198,6 +232,9 @@ def build_rule_narrative(result) -> dict[str, Any]:
                  f"{fmt_num(_sens(r, +1, 0), 2)}; 25bp lower terminal growth to {pccy} {fmt_num(_sens(r, 0, -1), 2)}")
     risks.append(f"**Execution:** the case assumes {fmt_pct(f_first['growth'])} growth in {fy1}E and margins of {fmt_pct(f_last['ebitda_margin'])} by {fyN}E; "
                  f"a return to the {first_year}–{last_year} average margin of {fmt_pct(h['ebitda_margin'].mean())} would cut fair value")
+    oil = getattr(r, "oil", None)
+    if oil is not None:
+        risks.insert(0, _oil_risk(oil, pccy))
     risks.append("**Macro:** consumer spending, interest rates and FX can move revenue and the discount rate simultaneously")
 
     fwd = r.forward_multiples

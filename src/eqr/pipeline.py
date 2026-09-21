@@ -57,6 +57,15 @@ def run_analysis(cfg: CompanyConfig, cache: DiskCache | None = None, progress: P
     if index_prices is None:
         warnings.append(f"Index {cfg.index} unavailable; beta falls back to Yahoo's beta.")
     extra = load_history_file(cfg.history_csv) if cfg.history_csv else None
+    oil = None
+    if cfg.oil_sensitivity:
+        from .retrieve import OilFactsheetError, load_oil_sensitivity
+
+        try:
+            oil = load_oil_sensitivity(cfg.oil_sensitivity)
+            progress(f"Oil sensitivity: total beta {oil.beta_total:+.2f} over the {oil.window}")
+        except OilFactsheetError as exc:     # context, not a driver: never take the case down with it
+            warnings.append(f"Oil sensitivity not loaded: {exc}")
 
     # ------------------------------------------------------------ historicals
     hist = build_history(snap, cfg, extra)
@@ -180,7 +189,7 @@ def run_analysis(cfg: CompanyConfig, cache: DiskCache | None = None, progress: P
         prices=snap.prices, index_prices=index_prices, forward_multiples=fwd, warnings=warnings,
         price_currency=listing_ccy, fx_reporting_per_listing=fx, shares_real=shares_real,
         scenarios=scenarios, scenario_weighted_value=weighted_value, reverse_dcf=reverse,
-        crosscheck=check, multiple_history=mult_hist,
+        crosscheck=check, multiple_history=mult_hist, oil=oil,
     )
     return result
 

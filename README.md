@@ -164,6 +164,33 @@ its cause. What came out of it:
 
 Every remaining extreme output carries at least one warning. Knowing where a model stops working is part of the model.
 
+## Optional oil sensitivity
+
+Oslo Børs is an oil market, so "commodity exposure" turns up in every risk section and almost never with a number behind
+it. A case config can point at a factsheet from the companion study
+[oslo-oil-sensitivity](https://github.com/oscarschjelderup-sketch/oslo-oil-sensitivity):
+
+```bash
+oilbeta stock MOWI.OL --json oil/MOWI.OL.json    # in the other repo
+```
+```yaml
+oil_sensitivity: oil/MOWI.OL.json                 # in configs/MOWI.OL.yaml
+```
+
+The risk section then states what was measured, with its interval — and says so plainly when the measurement is that
+there is nothing there. Mowi, for instance:
+
+> **Oil price:** no measurable direct exposure — the share has moved +0.03% per 1% move in Brent over the last 5 years,
+> an interval of −0.04 to +0.09 that spans zero (260 weeks to 2026-09-11); a higher oil price has been a cost: holding
+> the index fixed, the share has moved −0.12% per 1% move in Brent.
+
+Subsea 7, on the same basis, reads: *a 20% fall in Brent has come with an 8.4% fall in the share (5.2% to 11.5%
+interval); that is oil risk beyond the index's own.*
+
+The two projects share a versioned JSON schema (`oilbeta.stock/1`), not an import, so either can be rewritten
+independently. It is context, never a driver: it does not touch the forecast, the WACC or the DCF, and a test asserts a
+case runs to identical numbers with and without it.
+
 ## Optional AI narrative
 
 `--narrative claude` sends the computed analysis (JSON) and the rule-based draft to Claude, which rewrites the
@@ -186,6 +213,7 @@ src/eqr/
   narrative/           rules.py (deterministic text), claude.py (optional AI text)
   create/              deck.py (python-pptx), excel.py (openpyxl), dashboard.py (Chart.js), charts.py, style.py, render.py
 configs/               case configs (SATS.OL, KID.OL, BOUV.OL, MOWI.OL)
+oil/                   oil-sensitivity factsheets from the companion study (optional risk context)
 examples/              generated outputs for the bundled cases
 tests/                 offline tests: synthetic Yahoo-like snapshot, mocked Claude client, golden regression tests
 uv.lock                locked environment
