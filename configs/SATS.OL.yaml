@@ -1,0 +1,123 @@
+# Equity Research Engine case config — SATS ASA (Oslo Børs: SATS)
+ticker: SATS.OL
+name: SATS ASA
+short_name: SATS
+tagline: "Healthy body, healthy margins"
+index: OSEBX.OL
+index_name: OSEBX
+sector_label: "Fitness & well-being"
+footprint: "Norway, Sweden, Denmark, Finland"
+business_model: "Membership subscriptions & other"
+units_label: NOKm
+event_title: "Equity research case"
+
+peers:
+  - {ticker: BFIT.AS, name: Basic-Fit, group: Global fitness}
+  - {ticker: PLNT, name: Planet Fitness, group: Global fitness}
+  - {ticker: LTH, name: Life Time Group, group: Global fitness}
+  - {ticker: GYM.L, name: The Gym Group, group: Global fitness}
+  - {ticker: XPOF, name: Xponential Fitness, group: Global fitness}
+  - {ticker: EPR.OL, name: Europris, group: Nordic consumer}
+  - {ticker: KID.OL, name: Kid, group: Nordic consumer}
+  - {ticker: ORK.OL, name: Orkla, group: Nordic consumer}
+  - {ticker: CLAS-B.ST, name: Clas Ohlson, group: Nordic consumer}
+  - {ticker: THULE.ST, name: Thule Group, group: Nordic consumer}
+  - {ticker: RUSTA.ST, name: Rusta, group: Nordic consumer}
+
+assumptions:
+  forecast_years: 6
+  terminal_growth: 0.015
+  revenue_growth: null          # derived: consensus for the next two years, then fade to terminal growth
+  ebitda_margin: null           # explicit path per year, or null
+  ebitda_margin_target: 0.18    # analyst view: pre-IFRS 16 EBITDA margin expands from ~16.7% to 18% on operating leverage
+  tax_rate: 0.22
+  lease_treatment: operating    # rent above EBITDA, lease liabilities excluded from net debt (as in the Pareto case model)
+  lease_rate: 0.045
+  mid_year_convention: false
+
+wacc:
+  risk_free: 0.038              # 10y NOK government bond, approx.
+  equity_risk_premium: 0.05
+  beta_method: regression       # 3y weekly regression vs OSEBX, Blume-adjusted (falls back to Yahoo beta when R2 < 0.10)
+  beta_years: 3
+  size_premium: 0.01            # analyst view: 1% for a NOK 8-9bn market cap (auto would give 1.5%)
+
+recommendation:
+  buy_threshold: 0.15           # on expected 12-month total return (target price + dividend)
+  sell_threshold: -0.10
+  tp_method: dcf
+  tp_rounding: 0.5
+  roll_forward: true            # 12-month target price = fair value x (1 + cost of equity) - dividend
+
+scenarios:                      # shifts vs the base case, in decimals (0.01 = 1 percentage point)
+  - name: Bear
+    probability: 0.25
+    growth_shift: -0.02
+    margin_shift: -0.02
+    wacc_shift: 0.005
+    terminal_growth_shift: -0.0025
+    note: "Low-cost competition caps price increases and member growth stalls"
+  - name: Base
+    probability: 0.50
+    note: "Consensus growth; margin expands to 18% on operating leverage"
+  - name: Bull
+    probability: 0.25
+    growth_shift: 0.02
+    margin_shift: 0.02
+    wacc_shift: -0.005
+    terminal_growth_shift: 0.0025
+    note: "Premium concepts lift ARPM faster and club utilisation normalises"
+
+market:
+  sources: "Statistics Norway (SSB) training trends; MarketLine Gyms, Health & Fitness Clubs Scandinavia; company reports"
+  charts:
+    - title: "High and growing participation in strength training"
+      type: bar
+      categories: ["16-24", "25-44", "45-66", "67+"]
+      series:
+        - {name: "2021", values: [48.4, 79.7, 55.9, 31.3]}
+        - {name: "2024", values: [55.5, 85.4, 61.0, 45.2]}
+      value_format: "%"
+      source: "SSB, share of population that strength trains, by age group"
+    - title: "Leading market position in Scandinavia"
+      type: pie
+      categories: ["SATS", "Other operators"]
+      series:
+        - {name: "Market share 2024", values: [27, 73]}
+      value_format: "%"
+      source: "MarketLine, gyms and fitness clubs Scandinavia 2024"
+    - title: "Proven pricing power: ARPM growth"
+      type: bar
+      categories: ["2020A", "2021A", "2022A", "2023A", "2024A", "2025A"]
+      series:
+        - {name: "ARPM growth", values: [0.4, -15.2, 18.3, 10.0, 6.7, 4.0]}
+      value_format: "%"
+      source: "Company reports"
+    - title: "Rising disposable income supports affordability"
+      type: line
+      categories: ["2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025"]
+      series:
+        - {name: "Average annual salary (NOK k)", values: [548, 567, 585, 610, 636, 671, 707, 745]}
+      value_format: ""
+      source: "SSB, average monthly earnings x 12"
+  opportunities:
+    - "Proven ability to **raise prices above CPI** through product tiers"
+    - "Continued **ARPM growth** from dynamic pricing and premium concept roll-outs"
+    - "Structural under-penetration versus the US (9% vs 24%) leaves a long runway"
+  disruption:
+    - "Countering boutique studios by **integrating high-end concepts** inside existing clubs"
+    - "**SATS App** and online training act as retention tools"
+  threats:
+    - "**Macro headwinds**: prolonged high interest rates could pressure disposable income"
+    - "**Aggressive low-cost competition** could limit pricing flexibility"
+
+team:
+  - name: Oscar Schjelderup
+    school: Copenhagen Business School
+    year: 2nd year
+    experience: HA Invest member
+
+brand:
+  name: Equity Research Engine
+  analyst: Oscar Schjelderup
+  footer_note: "For illustration only — not investment advice"

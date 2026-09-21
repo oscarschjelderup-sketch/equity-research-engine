@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "equity-research-engine"
+version = "0.3.0"
+description = "Automated sell-side style equity research: retrieve market data, build a DCF and peer-multiple model, and generate an investment deck, an Excel model and an interactive dashboard."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Oscar Schjelderup" }]
+keywords = ["equity research", "dcf", "valuation", "python-pptx", "yfinance", "financial modeling"]
+dependencies = [
+  "pandas>=2.2",
+  "numpy>=1.26",
+  "yfinance>=0.2.50",
+  "matplotlib>=3.8",
+  "python-pptx>=1.0",
+  "openpyxl>=3.1",
+  "pyyaml>=6",
+  "typer>=0.12",
+  "rich>=13",
+  "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+ai = ["anthropic>=0.40"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+eqr = "eqr.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 150
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008", "B905"]  # long lines are a style choice; typer uses calls in defaults; zip(strict=) is noise here
+
+[tool.ruff.lint.per-file-ignores]
+"src/eqr/create/charts.py" = ["E402"]  # matplotlib backend must be set before pyplot is imported

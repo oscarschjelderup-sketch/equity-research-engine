@@ -1,0 +1,60 @@
+# Equity Research Engine case config — Bouvet ASA (Oslo Børs: BOUV), Nordic IT consultancy
+ticker: BOUV.OL
+name: Bouvet ASA
+short_name: Bouvet
+tagline: "Compounding consultants"
+index: OSEBX.OL
+index_name: OSEBX
+sector_label: "IT consulting & digital services"
+footprint: "Norway and Sweden"
+business_model: "Time-and-material consulting, mainly public sector and energy clients"
+units_label: NOKm
+
+peers:
+  - {ticker: KNOW.ST, name: Knowit, group: Nordic IT services}
+  - {ticker: TIETO.HE, name: Tietoevry, group: Nordic IT services}
+  - {ticker: NETC.CO, name: Netcompany, group: Nordic IT services}
+  - {ticker: ATEA.OL, name: Atea, group: Nordic IT services}
+  - {ticker: SOP.PA, name: Sopra Steria, group: European IT services}
+  - {ticker: CAP.PA, name: Capgemini, group: European IT services}
+  - {ticker: REY.MI, name: Reply, group: European IT services}
+  - {ticker: ACN, name: Accenture, group: Global IT services}
+
+assumptions:
+  forecast_years: 6
+  terminal_growth: 0.02
+  ebitda_margin_target: null     # hold near the 3-year average; set e.g. 0.13 to express a view
+  tax_rate: 0.22
+  lease_treatment: operating
+
+wacc:
+  risk_free: 0.038
+  equity_risk_premium: 0.05
+  beta_method: regression
+
+recommendation:
+  tp_method: dcf
+  tp_rounding: 0.5
+
+market:
+  sources: "Company reports; Equity Research Engine estimates"
+  charts: []                     # empty -> the market slide is filled with peer benchmarking
+  opportunities:
+    - "**Public-sector digitalisation** in Norway keeps demand for senior consultants high"
+    - "**Energy transition** clients (grid, oil & gas, renewables) grow their IT budgets"
+  disruption:
+    - "**Generative AI** raises consultant productivity but pressures billable hours"
+  threats:
+    - "**Wage inflation** outpacing price increases would compress margins"
+    - "**Public-sector budget cuts** could reduce framework-agreement volumes"
+
+team:
+  - name: Oscar Schjelderup
+    school: Copenhagen Business School
+    year: 2nd year
+    experience: HA Invest member
+
+brand:
+  name: Equity Research Engine
+  analyst: Oscar Schjelderup
+  footer_note: "For illustration only — not investment advice"

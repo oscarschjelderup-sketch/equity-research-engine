@@ -1,0 +1,60 @@
+# Equity Research Engine case config for MOWI.OL
+ticker: MOWI.OL
+name: null                 # defaults to the Yahoo Finance long name
+short_name: null
+tagline: null              # cover slide tagline, e.g. "Healthy body, healthy margins"
+index: OSEBX.OL               # benchmark index used for beta and relative performance (chosen from the ticker suffix)
+index_name: OSEBX
+sector_label: null
+footprint: null
+business_model: null
+units_label: null          # e.g. NOKm / USDm (defaults to <currency>m)
+
+peers:                     # tickers must exist on Yahoo Finance
+  # - {ticker: PEER.OL, name: Peer Name, group: Nordic}
+
+assumptions:
+  forecast_years: 6
+  terminal_growth: 0.02
+  revenue_growth: null     # explicit list (one per forecast year) or null to derive
+  ebitda_margin: null      # explicit list or null
+  ebitda_margin_target: null
+  da_pct_revenue: null
+  capex_pct_revenue: null
+  nwc_pct_revenue: null    # net working capital as % of revenue (negative for prepaid models); null = from balance sheet
+  tax_rate: 0.22
+  lease_treatment: operating   # operating = pre-IFRS 16 (rent above EBITDA) | financial = leases as debt
+  lease_rate: 0.045
+  mid_year_convention: false
+
+wacc:
+  risk_free: 0.038
+  equity_risk_premium: 0.05
+  beta: null               # null -> regression vs index (Blume adjusted)
+  beta_method: regression
+  size_premium: auto       # auto = by market cap (0 / 0.75% / 1.5% / 2.5%), or a number such as 0.01
+  cost_of_debt_pretax: null
+  debt_weight: null        # null -> market weights
+
+recommendation:
+  buy_threshold: 0.15
+  sell_threshold: -0.10
+  tp_method: dcf           # dcf | blend
+
+market:                    # analyst-supplied data for the Market overview slide; empty = peer benchmarking
+  charts: []
+  opportunities: []
+  disruption: []
+  threats: []
+  sources: ""
+
+team:
+- name: Oscar Schjelderup
+  school: Copenhagen Business School
+  year: 2nd year
+  experience: HA Invest member
+
+brand:
+  name: Equity Research Engine
+  analyst: Oscar Schjelderup
+  footer_note: For illustration only — not investment advice

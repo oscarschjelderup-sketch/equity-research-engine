@@ -1,0 +1,62 @@
+# Equity Research Engine case config — Kid ASA (Oslo Børs: KID), Nordic home textiles retailer
+ticker: KID.OL
+name: Kid ASA
+short_name: Kid
+tagline: "A wonderful business at a fair price"
+index: OSEBX.OL
+index_name: OSEBX
+sector_label: "Home furnishing retail"
+footprint: "Norway, Sweden, Finland, Estonia"
+business_model: "Vertically integrated private-label retail (Kid, Hemtex)"
+units_label: NOKm
+
+peers:
+  - {ticker: EPR.OL, name: Europris, group: Nordic retail}
+  - {ticker: CLAS-B.ST, name: Clas Ohlson, group: Nordic retail}
+  - {ticker: RUSTA.ST, name: Rusta, group: Nordic retail}
+  - {ticker: TOKMAN.HE, name: Tokmanni, group: Nordic retail}
+  - {ticker: BHG.ST, name: BHG Group, group: Nordic retail}
+  - {ticker: BMAX.ST, name: Byggmax, group: Nordic retail}
+  - {ticker: ORK.OL, name: Orkla, group: Nordic consumer}
+  - {ticker: HM-B.ST, name: H&M, group: Nordic consumer}
+
+assumptions:
+  forecast_years: 6
+  terminal_growth: 0.02
+  ebitda_margin_target: null
+  tax_rate: 0.22
+  lease_treatment: operating
+  lease_rate: 0.045
+
+wacc:
+  risk_free: 0.038
+  equity_risk_premium: 0.05
+  beta_method: regression
+
+recommendation:
+  tp_method: dcf
+  tp_rounding: 1.0
+
+market:
+  sources: "Company reports; Statistics Norway; Equity Research Engine estimates"
+  charts: []          # no analyst-supplied market data -> the engine fills the slide with peer benchmarking
+  opportunities:
+    - "**Swedish recovery** supports the Hemtex segment"
+    - "Opportunity to **increase square metres per store** and sell the full range in existing stores"
+  disruption:
+    - "**Direct-to-consumer** online players threaten in-store sales"
+    - "Competitors adopting **AI-driven inventory management**"
+  threats:
+    - "Potential **cost spikes in raw material and freight** prices"
+    - "**Tariffs on Chinese production** would hit sourcing costs"
+
+team:
+  - name: Oscar Schjelderup
+    school: Copenhagen Business School
+    year: 2nd year
+    experience: HA Invest member
+
+brand:
+  name: Equity Research Engine
+  analyst: Oscar Schjelderup
+  footer_note: "For illustration only — not investment advice"
