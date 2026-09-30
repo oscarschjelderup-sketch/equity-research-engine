@@ -15,3 +15,6 @@ examples/*/charts/
 Thumbs.db
 notes/
 .ruff_cache/
+
+site/
+_site/

@@ -8,6 +8,19 @@ Terminal value methods
 The value-driver form makes the reinvestment needed for growth explicit: growing at g while
 earning RONIC on new capital requires reinvesting g / RONIC of NOPAT. With RONIC = WACC growth
 adds no value; with RONIC -> infinity it collapses to a plain NOPAT perpetuity.
+
+Valuation date (stub period)
+----------------------------
+Cash flows are discounted to the valuation date (normally today), not to the last fiscal year-end.
+With ``v`` = years from the fiscal year-end to the valuation date and ``b`` = years from the fiscal
+year-end to the latest balance sheet (b <= v):
+
+* year 1 counts only the share (1 - b) of its cash flow that is not yet in the latest net debt,
+  discounted over (1 - v) years (end-year) or ((1 + b) / 2 - v) years (mid-year);
+* year i >= 2 is discounted over (i - v) years, less 0.5 with the mid-year convention;
+* the terminal value is discounted over (N - v) years.
+
+With v = b = 0 this is the textbook fiscal-year-end DCF.
 """
 from __future__ import annotations
 
@@ -43,6 +56,10 @@ class DcfResult:
     implied_exit_ev_ebitda: float | None = None
     terminal_method: str = "gordon"
     ronic: float | None = None
+    valuation_offset: float = 0.0  # years from the last fiscal year-end to the valuation date
+    balance_offset: float = 0.0  # years from the last fiscal year-end to the balance sheet used for net debt
+    fcf_weights: list[float] = field(default_factory=list)  # share of each year's FCF still to come
+    discount_periods: list[float] = field(default_factory=list)
     sensitivity: pd.DataFrame | None = field(default=None, repr=False)
     sensitivity_waccs: list[float] = field(default_factory=list)
     sensitivity_growths: list[float] = field(default_factory=list)
@@ -66,17 +83,30 @@ def terminal_cash_flow(fcf_last: float, g: float, nopat_last: float | None = Non
     return fcf_last * (1 + g)
 
 
+def discount_periods(n: int, mid_year: bool = False, valuation_offset: float = 0.0, balance_offset: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """Discount periods (years from the valuation date) and the share of each year's FCF still to come."""
+    v = float(valuation_offset)
+    b = min(float(balance_offset), v)
+    t = np.arange(1, n + 1, dtype=float) - v - (0.5 if mid_year else 0.0)
+    w = np.ones(n)
+    if n:
+        t[0] = ((1 + b) / 2 if mid_year else 1.0) - v
+        w[0] = 1.0 - b
+    return t, w
+
+
 def value_per_share(fcfs: list[float], wacc: float, g: float, net_debt: float, shares: float, minorities: float = 0.0,
-                    mid_year: bool = False, nopat_last: float | None = None, ronic: float | None = None) -> float:
+                    mid_year: bool = False, nopat_last: float | None = None, ronic: float | None = None,
+                    valuation_offset: float = 0.0, balance_offset: float = 0.0) -> float:
     """Equity value per share for a given WACC / terminal growth pair."""
     if wacc <= g:
         return float("nan")
     n = len(fcfs)
-    t = np.arange(1, n + 1, dtype=float) - (0.5 if mid_year else 0.0)
+    t, w = discount_periods(n, mid_year, valuation_offset, balance_offset)
     dfs = (1 + wacc) ** (-t)
-    pv = float(np.sum(np.array(fcfs) * dfs))
+    pv = float(np.sum(np.array(fcfs) * w * dfs))
     tv = terminal_cash_flow(fcfs[-1], g, nopat_last, ronic) / (wacc - g)
-    pv_tv = tv * (1 + wacc) ** (-n)
+    pv_tv = tv * (1 + wacc) ** (-(n - valuation_offset))
     equity = pv + pv_tv - net_debt - minorities
     return float(equity / shares) if shares else float("nan")
 
@@ -96,6 +126,8 @@ def run_dcf(
     grid: int = 7,
     terminal_method: str = "gordon",
     ronic: float | None = None,
+    valuation_offset: float = 0.0,
+    balance_offset: float = 0.0,
 ) -> DcfResult:
     explicit = forecast[forecast.index != "TV"]
     years = [int(y) for y in explicit.index]
@@ -105,12 +137,13 @@ def run_dcf(
         raise ValueError(f"WACC ({wacc:.2%}) must exceed terminal growth ({terminal_growth:.2%}).")
     nopat_last = float(explicit["nopat"].iloc[-1]) if (terminal_method == "value_driver" and "nopat" in explicit) else None
     ronic_used = ronic if nopat_last is not None else None
-    t = np.arange(1, n + 1, dtype=float) - (0.5 if mid_year else 0.0)
+    balance_offset = min(balance_offset, valuation_offset)
+    t, w = discount_periods(n, mid_year, valuation_offset, balance_offset)
     dfs = (1 + wacc) ** (-t)
-    pv = np.array(fcfs) * dfs
+    pv = np.array(fcfs) * w * dfs
     terminal_fcf = terminal_cash_flow(fcfs[-1], terminal_growth, nopat_last, ronic_used)
     tv = terminal_fcf / (wacc - terminal_growth)
-    pv_tv = tv * (1 + wacc) ** (-n)
+    pv_tv = tv * (1 + wacc) ** (-(n - valuation_offset))
     ev = float(pv.sum() + pv_tv)
     equity = ev - net_debt - minorities
     vps = equity / shares if shares else float("nan")
@@ -122,7 +155,8 @@ def run_dcf(
     k = grid // 2
     waccs = [round(wacc + (i - k) * wacc_step, 6) for i in range(grid)]
     growths = [round(terminal_growth + (i - k) * growth_step, 6) for i in range(grid)]
-    values = [[value_per_share(fcfs, w, g, net_debt, shares, minorities, mid_year, nopat_last, ronic_used) for w in waccs] for g in growths]
+    values = [[value_per_share(fcfs, wc, g, net_debt, shares, minorities, mid_year, nopat_last, ronic_used, valuation_offset, balance_offset)
+               for wc in waccs] for g in growths]
     sens = pd.DataFrame(values, index=growths, columns=waccs)
 
     return DcfResult(
@@ -132,7 +166,9 @@ def run_dcf(
         shares=float(shares), value_per_share=float(vps), price=price, upside=upside,
         tv_share_of_ev=float(pv_tv / ev) if ev else float("nan"), wacc=float(wacc), terminal_growth=float(terminal_growth),
         mid_year=mid_year, implied_exit_ev_ebitda=exit_mult, terminal_method="value_driver" if ronic_used else "gordon",
-        ronic=ronic_used, sensitivity=sens, sensitivity_waccs=waccs, sensitivity_growths=growths,
+        ronic=ronic_used, valuation_offset=float(valuation_offset), balance_offset=float(balance_offset),
+        fcf_weights=[float(x) for x in w], discount_periods=[float(x) for x in t],
+        sensitivity=sens, sensitivity_waccs=waccs, sensitivity_growths=growths,
     )
 
 
@@ -162,14 +198,16 @@ def solve(fn: Callable[[float], float], target: float, lo: float, hi: float, *, 
 
 
 def implied_wacc(fcfs: list[float], g: float, net_debt: float, shares: float, minorities: float, price: float, mid_year: bool = False,
-                 nopat_last: float | None = None, ronic: float | None = None) -> float | None:
+                 nopat_last: float | None = None, ronic: float | None = None, valuation_offset: float = 0.0,
+                 balance_offset: float = 0.0) -> float | None:
     """The discount rate at which the DCF value equals the share price."""
-    return solve(lambda w: value_per_share(fcfs, w, g, net_debt, shares, minorities, mid_year, nopat_last, ronic), price,
-                 g + 0.0025, 0.40, increasing=False)
+    return solve(lambda w: value_per_share(fcfs, w, g, net_debt, shares, minorities, mid_year, nopat_last, ronic,
+                                           valuation_offset, balance_offset), price, g + 0.0025, 0.40, increasing=False)
 
 
 def implied_terminal_growth(fcfs: list[float], wacc: float, net_debt: float, shares: float, minorities: float, price: float,
-                            mid_year: bool = False, nopat_last: float | None = None, ronic: float | None = None) -> float | None:
+                            mid_year: bool = False, nopat_last: float | None = None, ronic: float | None = None,
+                            valuation_offset: float = 0.0, balance_offset: float = 0.0) -> float | None:
     """The perpetual growth rate at which the DCF value equals the share price."""
-    return solve(lambda g: value_per_share(fcfs, wacc, g, net_debt, shares, minorities, mid_year, nopat_last, ronic), price,
-                 -0.10, wacc - 0.0025, increasing=True)
+    return solve(lambda g: value_per_share(fcfs, wacc, g, net_debt, shares, minorities, mid_year, nopat_last, ronic,
+                                           valuation_offset, balance_offset), price, -0.10, wacc - 0.0025, increasing=True)

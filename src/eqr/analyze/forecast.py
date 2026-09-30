@@ -31,6 +31,7 @@ class Drivers:
     notes: list[str] = field(default_factory=list)
     capex_pct_path: list[float] = field(default_factory=list)  # capex % of revenue per forecast year (may normalise towards D&A)
     tax_source: str = ""
+    nowcast: dict | None = None  # how year 1 was built from the reported quarters (analyze/nowcast.py), when it was
 
     def capex_at(self, i: int) -> float:
         """Capex % of revenue in forecast year ``i`` (0-based); the terminal year uses the last value."""
@@ -54,8 +55,12 @@ def _linspace(a: float, b: float, n: int) -> list[float]:
     return [float(x) for x in np.linspace(a, b, n)]
 
 
-def _consensus_growth(snap: Snapshot, last_revenue_native: float) -> tuple[list[float], str]:
-    """Return consensus revenue growth for the next fiscal years, aligned to history."""
+def _consensus_growth(snap: Snapshot, last_revenue_native: float, fx_listing_to_reporting: float = 1.0) -> tuple[list[float], str]:
+    """Return consensus revenue growth for the next fiscal years, aligned to history.
+
+    Growth is a ratio, so the currency of Yahoo's table does not matter – but the alignment check must allow for the table
+    being in the listing currency (Yara: NOK estimates on USD accounts).
+    """
     re = snap.revenue_estimate
     if re is None or re.empty or "growth" not in re.columns:
         return [], ""
@@ -66,7 +71,8 @@ def _consensus_growth(snap: Snapshot, last_revenue_native: float) -> tuple[list[
     year_ago = g0.get("yearAgoRevenue")
     aligned = True
     if year_ago is not None and not pd.isna(year_ago) and last_revenue_native:
-        aligned = abs(float(year_ago) / float(last_revenue_native) - 1.0) < 0.06
+        ratio = float(year_ago) / float(last_revenue_native)
+        aligned = abs(ratio - 1.0) < 0.06 or abs(ratio * float(fx_listing_to_reporting or 1.0) - 1.0) < 0.06
     growth: list[float] = []
     if aligned:
         growth.append(float(g0["growth"]))
@@ -80,7 +86,8 @@ def _consensus_growth(snap: Snapshot, last_revenue_native: float) -> tuple[list[
     return [], ""
 
 
-def derive_drivers(hist: pd.DataFrame, cfg: CompanyConfig, snap: Snapshot) -> Drivers:
+def derive_drivers(hist: pd.DataFrame, cfg: CompanyConfig, snap: Snapshot, nowcast=None, fx_listing_to_reporting: float = 1.0) -> Drivers:
+    """``nowcast`` (analyze.nowcast.Nowcast) replaces the year-1 growth and margin with the figures built from the reported quarters."""
     a = cfg.assumptions
     n = int(a.forecast_years)
     last_year = int(hist.index[-1])
@@ -95,7 +102,7 @@ def derive_drivers(hist: pd.DataFrame, cfg: CompanyConfig, snap: Snapshot) -> Dr
         last_rev_native = float(hist["revenue"].iloc[-1] * cfg.units_divisor)
         cons, anchor = ([], "")
         if a.use_consensus_growth:
-            cons, anchor = _consensus_growth(snap, last_rev_native)
+            cons, anchor = _consensus_growth(snap, last_rev_native, fx_listing_to_reporting)
         if not cons:
             rev = hist["revenue"].dropna()
             k = min(3, len(rev) - 1)
@@ -109,20 +116,30 @@ def derive_drivers(hist: pd.DataFrame, cfg: CompanyConfig, snap: Snapshot) -> Dr
         remaining = n - len(cons)
         fade = _linspace(cons[-1], a.terminal_growth, remaining + 1)[1:] if remaining > 0 else []
         growth = (cons + fade)[:n]
+        if nowcast is not None:
+            # year 1 is what the reported quarters and the rest of last year say; the path from year 2 keeps its anchor,
+            # because this year's momentum is a level effect, not a new long-run growth rate
+            growth[0] = float(min(max(nowcast.growth_fy0, a.growth_floor), a.growth_cap))
         notes.append(f"Revenue growth anchored on {anchor}, fading linearly to {a.terminal_growth:.1%} terminal growth.")
 
     # ---- EBITDA margin -----------------------------------------------------
     last_margin = float(hist["ebitda_margin"].iloc[-1])
+    start_margin, start_note = last_margin, ""
+    if nowcast is not None and not a.ebitda_margin:
+        start_margin = float(nowcast.margin_fy0)
+        start_note = f" {years[0]}E at the nowcast margin of {start_margin:.1%};"
     if a.ebitda_margin:
         margins = _pad(list(a.ebitda_margin), n)
     elif a.ebitda_margin_target is not None:
-        margins = _linspace(last_margin, float(a.ebitda_margin_target), n + 1)[1:]
-        notes.append(f"EBITDA margin moves linearly from {last_margin:.1%} to {a.ebitda_margin_target:.1%}.")
+        margins = _linspace(start_margin, float(a.ebitda_margin_target), n) if nowcast is not None else _linspace(last_margin, float(a.ebitda_margin_target), n + 1)[1:]
+        notes.append(f"EBITDA margin moves linearly from {start_margin:.1%} to {a.ebitda_margin_target:.1%}.")
     else:
         recent = hist["ebitda_margin"].dropna().tail(3)
         target = float(recent.mean()) if len(recent) else last_margin
-        margins = _linspace(last_margin, target, n + 1)[1:]
-        notes.append(f"EBITDA margin held near the 3-year average of {target:.1%}.")
+        margins = _linspace(start_margin, target, n) if nowcast is not None else _linspace(last_margin, target, n + 1)[1:]
+        notes.append(f"EBITDA margin held near the 3-year average of {target:.1%}.{start_note}".rstrip(";"))
+    if nowcast is not None:
+        notes.append(nowcast.note)
 
     def _avg(col: str, default: float, lo: float, hi: float) -> float:
         s = hist[col].replace([np.inf, -np.inf], np.nan).dropna().tail(3)
@@ -170,7 +187,7 @@ def derive_drivers(hist: pd.DataFrame, cfg: CompanyConfig, snap: Snapshot) -> Dr
             tax, tax_source = float(min(max(agg, 0.10), 0.85)), "profit-weighted effective rate, last 3 years"
             notes.append(f"Tax rate of {tax:.0%} from the accounts ({tax_source}) instead of the {statutory:.0%} statutory rate.")
     return Drivers(years, growth, margins, da_pct, capex_pct, nwc_pct, tax, float(a.terminal_growth), anchor, notes,
-                   capex_pct_path=capex_path, tax_source=tax_source)
+                   capex_pct_path=capex_path, tax_source=tax_source, nowcast=nowcast.as_dict() if nowcast is not None else None)
 
 
 def _year(revenue: float, prev_revenue: float, g: float, m: float, d: Drivers, capex_pct: float | None = None) -> dict:
@@ -199,3 +216,17 @@ def build_forecast(hist: pd.DataFrame, drivers: Drivers) -> pd.DataFrame:
     gt = drivers.terminal_growth
     rows.append(dict(year="TV", **_year(prev * (1 + gt), prev, gt, drivers.ebitda_margin[-1], drivers, drivers.capex_at(len(drivers.years)))))
     return pd.DataFrame(rows).set_index("year")
+
+
+def model_eps(forecast: pd.DataFrame, hist: pd.DataFrame, shares: float, i: int) -> float | None:
+    """Engine EPS for forecast year ``i``: (EBIT - interest on financial debt) x (1 - tax) / shares.
+
+    On the operating lease basis EBIT already carries the lease interest, so this is comparable with
+    reported EPS. ``shares`` are effective shares, so the result is in the listing currency.
+    """
+    explicit = forecast[forecast.index != "TV"]
+    if i >= len(explicit) or not shares:
+        return None
+    interest = float(hist["interest_ex_leases"].dropna().iloc[-1]) if hist["interest_ex_leases"].notna().any() else 0.0
+    ebit = float(explicit["ebit"].iloc[i])
+    return (ebit - interest) * (1 - float(explicit["tax_rate_used"].iloc[i])) / shares

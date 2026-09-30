@@ -16,7 +16,10 @@ oil_sensitivity: oil/MOWI.OL.json
 units_label: null          # e.g. NOKm / USDm (defaults to <currency>m)
 
 peers:                     # tickers must exist on Yahoo Finance
-  # - {ticker: PEER.OL, name: Peer Name, group: Nordic}
+  - {ticker: SALM.OL,  name: SalMar,        group: Salmon farming}
+  - {ticker: LSG.OL,   name: Lerøy Seafood, group: Salmon farming}
+  - {ticker: BAKKA.OL, name: Bakkafrost,    group: Salmon farming}
+  - {ticker: GSF.OL,   name: Grieg Seafood, group: Salmon farming}
 
 assumptions:
   forecast_years: 6

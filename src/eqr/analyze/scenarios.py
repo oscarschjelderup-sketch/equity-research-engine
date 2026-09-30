@@ -61,18 +61,19 @@ def shifted_drivers(drivers: Drivers, growth_shift: float = 0.0, margin_shift: f
 
 
 def _value(hist: pd.DataFrame, drivers: Drivers, wacc: float, *, net_debt: float, shares: float, minorities: float, mid_year: bool,
-           terminal_method: str, ronic: float | None) -> tuple[float, pd.DataFrame]:
+           terminal_method: str, ronic: float | None, valuation_offset: float = 0.0, balance_offset: float = 0.0) -> tuple[float, pd.DataFrame]:
     fc = build_forecast(hist, drivers)
     explicit = fc[fc.index != "TV"]
     fcfs = [float(v) for v in explicit["ufcf"].values]
     nopat_last = float(explicit["nopat"].iloc[-1]) if terminal_method == "value_driver" else None
     v = value_per_share(fcfs, wacc, drivers.terminal_growth, net_debt, shares, minorities, mid_year, nopat_last,
-                        ronic if terminal_method == "value_driver" else None)
+                        ronic if terminal_method == "value_driver" else None, valuation_offset, balance_offset)
     return v, explicit
 
 
 def run_scenarios(hist: pd.DataFrame, drivers: Drivers, cfg: CompanyConfig, base_wacc: float, *, net_debt: float, shares: float,
-                  minorities: float, price: float | None, ronic: float | None) -> tuple[list[ScenarioResult], float | None]:
+                  minorities: float, price: float | None, ronic: float | None, valuation_offset: float = 0.0,
+                  balance_offset: float = 0.0) -> tuple[list[ScenarioResult], float | None]:
     a = cfg.assumptions
     results: list[ScenarioResult] = []
     last_rev = float(hist["revenue"].iloc[-1])
@@ -82,7 +83,7 @@ def run_scenarios(hist: pd.DataFrame, drivers: Drivers, cfg: CompanyConfig, base
         if w <= d.terminal_growth + 0.0025:
             continue
         v, explicit = _value(hist, d, w, net_debt=net_debt, shares=shares, minorities=minorities, mid_year=a.mid_year_convention,
-                             terminal_method=a.terminal_method, ronic=ronic)
+                             terminal_method=a.terminal_method, ronic=ronic, valuation_offset=valuation_offset, balance_offset=balance_offset)
         n = len(explicit)
         final_rev = float(explicit["revenue"].iloc[-1])
         results.append(ScenarioResult(
@@ -97,7 +98,7 @@ def run_scenarios(hist: pd.DataFrame, drivers: Drivers, cfg: CompanyConfig, base
 
 
 def reverse_dcf(hist: pd.DataFrame, drivers: Drivers, cfg: CompanyConfig, base_wacc: float, *, net_debt: float, shares: float,
-                minorities: float, price: float, ronic: float | None) -> ReverseDcf:
+                minorities: float, price: float, ronic: float | None, valuation_offset: float = 0.0, balance_offset: float = 0.0) -> ReverseDcf:
     a = cfg.assumptions
     fc = build_forecast(hist, drivers)
     explicit = fc[fc.index != "TV"]
@@ -105,12 +106,13 @@ def reverse_dcf(hist: pd.DataFrame, drivers: Drivers, cfg: CompanyConfig, base_w
     use_vd = a.terminal_method == "value_driver"
     nopat_last = float(explicit["nopat"].iloc[-1]) if use_vd else None
     r = ronic if use_vd else None
-    iw = implied_wacc(fcfs, drivers.terminal_growth, net_debt, shares, minorities, price, a.mid_year_convention, nopat_last, r)
-    ig = implied_terminal_growth(fcfs, base_wacc, net_debt, shares, minorities, price, a.mid_year_convention, nopat_last, r)
+    timing = {"valuation_offset": valuation_offset, "balance_offset": balance_offset}
+    iw = implied_wacc(fcfs, drivers.terminal_growth, net_debt, shares, minorities, price, a.mid_year_convention, nopat_last, r, **timing)
+    ig = implied_terminal_growth(fcfs, base_wacc, net_debt, shares, minorities, price, a.mid_year_convention, nopat_last, r, **timing)
 
     def value_at(shift: float) -> float:
         v, _ = _value(hist, shifted_drivers(drivers, margin_shift=shift), base_wacc, net_debt=net_debt, shares=shares,
-                      minorities=minorities, mid_year=a.mid_year_convention, terminal_method=a.terminal_method, ronic=ronic)
+                      minorities=minorities, mid_year=a.mid_year_convention, terminal_method=a.terminal_method, ronic=ronic, **timing)
         return v
 
     ms = solve(value_at, price, -0.25, 0.25, increasing=True)
@@ -118,3 +120,71 @@ def reverse_dcf(hist: pd.DataFrame, drivers: Drivers, cfg: CompanyConfig, base_w
     return ReverseDcf(implied_wacc=iw, implied_terminal_growth=ig, implied_margin_shift=ms,
                       implied_final_margin=(base_margin + ms) if ms is not None else None, base_wacc=base_wacc,
                       base_terminal_growth=drivers.terminal_growth, base_final_margin=base_margin)
+
+
+# --------------------------------------------------------------------------- value drivers (tornado)
+@dataclass
+class DriverSensitivity:
+    """Value per share with one driver shocked down and up, everything else at the base case."""
+
+    driver: str
+    shock: str
+    value_down: float  # driver lowered by the shock
+    value_up: float  # driver raised by the shock
+    base: float
+
+    @property
+    def swing(self) -> float:
+        vals = [v for v in (self.value_down, self.value_up) if np.isfinite(v)]
+        return float(max(vals) - min(vals)) if len(vals) == 2 else 0.0
+
+    def as_dict(self) -> dict:
+        d = asdict(self)
+        d["swing"] = self.swing
+        return d
+
+
+# (label, lever, step, shock text). Steps are the moves a portfolio manager asks about first.
+TORNADO_SHOCKS = [
+    ("EBITDA margin (all years)", "margin", 0.01, "±1pp"),
+    ("Revenue growth (all years)", "growth", 0.01, "±1pp"),
+    ("WACC", "wacc", 0.005, "±0.5pp"),
+    ("Terminal growth", "tg", 0.005, "±0.5pp"),
+    ("Capex, % of revenue", "capex", 0.005, "±0.5pp"),
+    ("Working capital, % of revenue", "nwc", 0.02, "±2pp"),
+    ("Tax rate", "tax", 0.02, "±2pp"),
+]
+
+
+def value_drivers(hist: pd.DataFrame, drivers: Drivers, cfg: CompanyConfig, base_wacc: float, *, net_debt: float, shares: float,
+                  minorities: float, ronic: float | None, valuation_offset: float = 0.0, balance_offset: float = 0.0) -> list[DriverSensitivity]:
+    """One-at-a-time sensitivities of the DCF value, sorted by swing (largest first)."""
+    a = cfg.assumptions
+    common = dict(net_debt=net_debt, shares=shares, minorities=minorities, mid_year=a.mid_year_convention,
+                  terminal_method=a.terminal_method, ronic=ronic, valuation_offset=valuation_offset, balance_offset=balance_offset)
+    base, _ = _value(hist, drivers, base_wacc, **common)
+    out: list[DriverSensitivity] = []
+    for label, lever, step, shock in TORNADO_SHOCKS:
+        vals = []
+        for sign in (-1.0, 1.0):
+            s, d, w = sign * step, drivers, base_wacc
+            if lever == "growth":
+                d = shifted_drivers(drivers, growth_shift=s)
+            elif lever == "margin":
+                d = shifted_drivers(drivers, margin_shift=s)
+            elif lever == "tg":
+                d = shifted_drivers(drivers, terminal_growth_shift=s)
+            elif lever == "wacc":
+                w = base_wacc + s
+            elif lever == "capex":
+                d = replace(drivers, capex_pct=drivers.capex_pct + s, capex_pct_path=[c + s for c in drivers.capex_pct_path])
+            elif lever == "nwc":
+                d = replace(drivers, nwc_pct=drivers.nwc_pct + s)
+            elif lever == "tax":
+                d = replace(drivers, tax_rate=min(max(drivers.tax_rate + s, 0.0), 0.95))
+            if w <= d.terminal_growth + 0.0025:
+                vals.append(float("nan"))
+                continue
+            vals.append(float(_value(hist, d, w, **common)[0]))
+        out.append(DriverSensitivity(label, shock, vals[0], vals[1], float(base)))
+    return sorted(out, key=lambda x: -x.swing)

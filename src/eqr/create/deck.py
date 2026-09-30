@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -713,9 +714,12 @@ def _appendix_dcf(prs, ctx: DeckContext):
             ["Tax rate", fmt_pct(w.tax_rate, 1)], ["Cost of debt (after tax)", fmt_pct(w.cost_of_debt_after_tax, 2)],
             ["Weight of equity", fmt_pct(w.weight_equity, 1)], ["Weight of debt", fmt_pct(w.weight_debt, 1)], ["WACC", fmt_pct(w.wacc, 2)]]
     add_table(slide, lx, y + 0.03, lw, rows, col_widths=[2.5, 1.2], row_h=0.235, font_size=8, bold_rows=[6, 12], band_rows=[2, 4, 8, 10])
-    add_text(slide, lx, y + 0.03 + 0.235 * len(rows) + 0.08, lw, 1.2,
-             [f"Beta: {w.beta_source}.", f"{_cap_first(w.size_premium_source or 'size premium from config')}.",
-              f"Cost of debt: {w.cost_of_debt_source}."], size=7.5, italic=True, color=DARK_GREY, markup=False, line_spacing=1.1)
+    notes = [f"Beta: {w.beta_source}."]
+    if w.peer_beta is not None:
+        pb = w.peer_beta
+        notes.append(f"Cross-check: bottom-up beta {pb.relevered_adjusted:.2f} ({pb.n} peers, unlevered median {pb.unlevered_median:.2f}).")
+    notes += [f"{_cap_first(w.size_premium_source or 'size premium from config')}.", f"Cost of debt: {w.cost_of_debt_source}."]
+    add_text(slide, lx, y + 0.03 + 0.235 * len(rows) + 0.08, lw, 1.2, notes, size=7.5, italic=True, color=DARK_GREY, markup=False, line_spacing=1.1)
     # ---- DCF
     mx = lx + lw + 0.3
     mw = 5.6
@@ -723,19 +727,25 @@ def _appendix_dcf(prs, ctx: DeckContext):
     yrs = [f"{yy}E" for yy in d.years]
     n = len(yrs)
     cw = (mw - 1.55) / n
-    rows = [["", *yrs], ["Unlevered FCF", *[fmt_num(v) for v in d.fcf]], ["Discount factor", *[f"{v:.3f}" for v in d.discount_factors]],
-            ["PV of FCF", *[fmt_num(v) for v in d.pv_fcf]]]
-    add_table(slide, mx, y + 0.03, mw, rows, col_widths=[1.55] + [cw] * n, row_h=0.235, font_size=8, bold_rows=[3])
+    rows = [["", *yrs], ["Unlevered FCF", *[fmt_num(v) for v in d.fcf]]]
+    stub = bool(d.fcf_weights) and d.fcf_weights[0] < 0.999
+    if stub:
+        rows.append(["Share still to come", *[fmt_pct(v, 0) for v in d.fcf_weights]])
+    rows += [["Years to discount", *[f"{v:.2f}" for v in d.discount_periods]] if d.discount_periods else ["Discount period", *[""] * n],
+             ["Discount factor", *[f"{v:.3f}" for v in d.discount_factors]], ["PV of FCF", *[fmt_num(v) for v in d.pv_fcf]]]
+    add_table(slide, mx, y + 0.03, mw, rows, col_widths=[1.55] + [cw] * n, row_h=0.235, font_size=8, bold_rows=[len(rows) - 1])
     yb = y + 0.03 + 0.235 * len(rows) + 0.15
     tv_label = "Terminal value (value driver)" if d.terminal_method == "value_driver" else "Terminal value (Gordon growth)"
+    nd_date = f" ({pd.Timestamp(r.latest.net_debt_date):%d.%m.%Y})" if (r.latest is not None and r.latest.net_debt_date) else ""
     bridge = [["Bridge to value per share", r.units_label],
               ["Sum of PV of FCF", fmt_num(d.sum_pv_fcf)], [tv_label, fmt_num(d.terminal_value)],
               ["PV of terminal value", fmt_num(d.pv_terminal)], ["Enterprise value", fmt_num(d.enterprise_value)],
-              ["Less: net debt", fmt_num(-d.net_debt)], ["Less: minority interest", fmt_num(-d.minorities)],
+              [f"Less: net debt{nd_date}", fmt_num(-d.net_debt)], ["Less: minority interest", fmt_num(-d.minorities)],
               ["Equity value", fmt_num(d.equity_value)], ["Shares outstanding (m)", fmt_num(r.shares_real, 1)]]
     if r.dual_currency:
         bridge.append([f"FX ({r.currency} per {pccy})", f"{r.fx_reporting_per_listing:.4f}"])
-    bridge.append([f"Fair value per share ({pccy})", fmt_num(d.value_per_share, 2)])
+    vd = f", {r.valuation_date:%d.%m.%Y}" if r.valuation_date else ""
+    bridge.append([f"Fair value per share ({pccy}{vd})", fmt_num(d.value_per_share, 2)])
     bold = [4, 7, len(bridge) - 1]
     if rec.horizon_months:
         bridge += [[f"x (1 + cost of equity {fmt_pct(rec.cost_of_equity, 2)})", fmt_num(rec.fair_value * (1 + rec.cost_of_equity) ** (rec.horizon_months / 12), 2)],
@@ -817,9 +827,10 @@ def _appendix_peers(prs, ctx: DeckContext):
         return
     slide = _new_slide(prs, ctx)
     top = _appendix_header(slide, ctx, "4.3", "Peer group detail",
-                           "Multiples on the last reported fiscal year, enterprise value on the same lease basis as the target company")
+                           "Last-twelve-month multiples where the quarters are reported; EV on today's market cap, the latest net debt and "
+                           "the same lease basis as the target company")
     header = ["Company", "Group", f"Mkt cap ({r.units_label})", f"EV ({r.units_label})", "Rev. growth", "EBITDA margin", "EV/Sales", "EV/EBITDA",
-              "EV/EBIT", "P/E", "P/E (fwd)"]
+              "EV/EBIT", "P/E", "P/E (NTM)"]
     rows = [header]
     for _, p in tbl.iterrows():
         rows.append([p["name"], p["group"], fmt_num(p["market_cap"]), fmt_num(p["ev"]), fmt_pct(p["revenue_growth"]), fmt_pct(p["ebitda_margin"]),
@@ -833,13 +844,19 @@ def _appendix_peers(prs, ctx: DeckContext):
                          fmt_mult(s["ev_ebit"]), fmt_mult(s["pe"]), fmt_mult(s["fwd_pe"])])
     c = r.comps.company
     h = r.hist.iloc[-1]
-    rows.append([r.cfg.display_short, "Target", fmt_num(r.market_cap), fmt_num(r.enterprise_value), fmt_pct(h["growth"]), fmt_pct(h["ebitda_margin"]),
+    L = r.latest
+    own_margin = (L.ebitda / L.revenue) if (L is not None and L.revenue and L.ebitda is not None) else h["ebitda_margin"]
+    rows.append([r.cfg.display_short, "Target", fmt_num(r.market_cap), fmt_num(r.enterprise_value), fmt_pct(h["growth"]), fmt_pct(own_margin),
                  fmt_mult(c.get("ev_sales")), fmt_mult(c.get("ev_ebitda")), fmt_mult(c.get("ev_ebit")), fmt_mult(c.get("pe")), fmt_mult(c.get("fwd_pe"))])
     row_h = min(0.26, (FOOTER_Y - 0.2 - top) / len(rows))
     fills = {(len(rows) - 1, j): "DCE6F0" for j in range(len(header))}
     add_table(slide, LM, top, CW, rows, col_widths=[2.4, 1.9] + [(CW - 4.3) / 9] * 9, row_h=row_h, font_size=8 if row_h >= 0.22 else 7,
               bold_rows=[first_stat, len(rows) - 1], cell_fills=fills, band_rows=list(range(2, first_stat, 2)), left_cols=2)
-    _footer(slide, ctx, r.cfg.sources_note + "; n.m. = not meaningful (negative or above 60x)")
+    bases = tbl["basis"].dropna().value_counts() if "basis" in tbl else pd.Series(dtype=int)
+    basis_txt = ", ".join(f"{b} ({n})" for b, n in bases.items())
+    own_basis = c.get("basis") or f"FY{r.last_actual_year}"
+    _footer(slide, ctx, r.cfg.sources_note + f"; income basis: {r.cfg.display_short} {own_basis}; peers {basis_txt}; "
+                                             "n.m. = not meaningful (negative or above 60x)")
 
 
 def _appendix_history(prs, ctx: DeckContext):
@@ -886,6 +903,115 @@ def _appendix_history(prs, ctx: DeckContext):
                  "as the model; net debt and the share count step once a year")
     add_bullets(slide, LM + 0.02, yb + 0.05, CW - 0.04, FOOTER_Y - 0.22 - yb, items, size=8.5)
     _footer(slide, ctx, r.cfg.sources_note)
+
+
+def _appendix_multiples(prs, ctx: DeckContext):
+    """Multiples in depth: the regression of EV/EBITDA on growth and margin, and forward multiples calendarised to NTM."""
+    r = ctx.result
+    tbl = r.comps.table
+    if tbl.empty:
+        return
+    c, reg, stats = r.comps.company, r.comps.regression, r.comps.stats
+    med = stats.loc["All|median"] if "All|median" in stats.index else None
+    slide = _new_slide(prs, ctx)
+    if reg is not None:
+        sub = (f"Growth and margin explain {fmt_pct(reg.r2, 0)} of the dispersion in peer EV/EBITDA; fundamentals justify {fmt_mult(reg.fitted_target)} "
+               f"for {r.cfg.display_short} against {fmt_mult(reg.actual_target)} today")
+    else:
+        sub = "Forward multiples on consensus calendarised to the next twelve months"
+    top = _appendix_header(slide, ctx, "4.6", "Multiples in depth", sub)
+    # ---- left: scatter + reading
+    lw = 5.3
+    y = add_section_header(slide, LM, top, lw, "EV/EBITDA against expected revenue growth", 1)
+    chart_h = 2.85
+    add_rect(slide, LM, y, lw, chart_h, fill=WHITE, line=NAVY, line_w=0.75)
+    if "mult_regression" in ctx.charts:
+        add_picture_fit(slide, ctx.charts["mult_regression"], LM + 0.08, y + 0.06, lw - 0.16, chart_h - 0.12)
+    else:
+        add_text(slide, LM + 0.2, y + 1.2, lw - 0.4, 0.5, "Too few peers with a meaningful EV/EBITDA and growth estimate for a regression",
+                 size=9, italic=True, color=DARK_GREY, align=PP_ALIGN.CENTER, markup=False)
+    yb = y + chart_h + 0.18
+    yb = add_section_header(slide, LM, yb, lw, "Reading the multiples", 3)
+    add_rect(slide, LM, yb, lw, FOOTER_Y - 0.12 - yb, fill=LIGHT_GREY)
+    add_bullets(slide, LM + 0.02, yb + 0.05, lw - 0.04, FOOTER_Y - 0.22 - yb, r.narrative.get("multiples_depth", []) or ["No peer consensus available"], size=7.8)
+    # ---- right: forward multiples table
+    rx = LM + lw + 0.3
+    rw = SW - LM - rx
+    y = add_section_header(slide, rx, top, rw, "Forward multiples and quality – consensus, calendarised to the next twelve months", 2)
+    header = ["Company", "EV/Sales NTM", "EV/EBITDA NTM*", "P/E FY0", "P/E FY1", "P/E NTM", "EPS growth", "PEG", "FCF yield", "Div. yield"]
+    rows = [header]
+
+    def line(name, src) -> list:
+        g = src.get if isinstance(src, dict) else (lambda k, d=None: src[k] if k in src.index else d)
+        return [name, fmt_mult(g("ev_sales_ntm")), fmt_mult(g("ev_ebitda_ntm")), fmt_mult(g("pe_fy0")), fmt_mult(g("pe_fy1")), fmt_mult(g("fwd_pe")),
+                fmt_pct(g("eps_growth"), 0, sign=True), fmt_num(g("peg"), 2), fmt_pct(g("fcf_yield")), fmt_pct(g("div_yield"))]
+
+    for _, p in tbl.iterrows():
+        rows.append(line(p["name"], p.to_dict()))
+    first_stat = len(rows)
+    if med is not None:
+        rows.append(line("Peer median", med))
+    rows.append(line(r.cfg.display_short, c))
+    row_h = min(0.26, (FOOTER_Y - 0.55 - y) / len(rows))
+    fills = {(len(rows) - 1, j): "DCE6F0" for j in range(len(header))}
+    # the EV/EBITDA column needs room for the word; the rest share what is left
+    other = (rw - 1.45 - 0.86) / 8
+    add_table(slide, rx, y + 0.03, rw, rows, col_widths=[1.45, other, 0.86] + [other] * 7, row_h=row_h, font_size=7.5 if row_h >= 0.22 else 7,
+              bold_rows=[first_stat, len(rows) - 1], cell_fills=fills, band_rows=list(range(2, first_stat, 2)), left_cols=1)
+    yt = y + 0.03 + row_h * len(rows) + 0.06
+    add_text(slide, rx, yt, rw, FOOTER_Y - 0.12 - yt,
+             [f"* NTM revenue at the LTM EBITDA margin: Yahoo Finance carries no EBITDA consensus. FY0 = fiscal year in progress; {c.get('forward_basis', '')}. "
+              "EV in each company's reporting currency (market cap converted from the listing currency) with the latest net debt; FCF yield is levered, "
+              "after lease payments; n.m. = negative or above the cap."], size=6.8, italic=True, color=DARK_GREY, markup=False, line_spacing=1.1)
+    _footer(slide, ctx, r.cfg.sources_note + "; consensus: Yahoo Finance mean estimates; regression: OLS with an intercept over the peers shown")
+
+
+def _appendix_consensus(prs, ctx: DeckContext):
+    """Where we differ from consensus, where consensus is moving, what is coming up, and what moves the value."""
+    r = ctx.result
+    cv = r.consensus
+    if (cv is None or not cv.estimates) and "tornado" not in ctx.charts:
+        return
+    pccy, ccy = r.price_currency, r.currency
+    slide = _new_slide(prs, ctx)
+    eps = [e for e in (cv.estimates if cv else []) if e.metric == "EPS" and e.diff is not None]
+    if eps:
+        e0 = eps[0]
+        sub = (f"Our {e0.year}E EPS of {pccy} {fmt_num(e0.ours, 2)} is {fmt_pct(abs(e0.diff), 0)} {'above' if e0.diff >= 0 else 'below'} consensus; "
+               f"estimate momentum is {cv.momentum}")
+    else:
+        sub = "What moves the value, one driver at a time"
+    top = _appendix_header(slide, ctx, "4.5", "Estimates vs consensus and value drivers", sub)
+    lw = 7.2
+    y = add_section_header(slide, LM, top, lw, "Our estimates vs consensus", 1)
+    if cv is not None and cv.estimates:
+        rows = [["Estimate", "Ours", "Consensus", "Difference", "Low", "High", "Analysts"]]
+        for e in sorted(cv.estimates, key=lambda e: (e.metric != "Revenue", e.year)):
+            d = 2 if e.metric == "EPS" else 0
+            unit = pccy if e.metric == "EPS" else f"{ccy}m"
+            rows.append([f"{e.metric} {e.year}E ({unit})", fmt_num(e.ours, d), fmt_num(e.consensus, d), fmt_pct(e.diff, 1, sign=True),
+                         fmt_num(e.low, d), fmt_num(e.high, d), str(e.n_analysts or "–")])
+        fills = {(i, 3): ("E3EEE9" if (e.diff or 0) >= 0 else "F6E1DE") for i, e in
+                 enumerate(sorted(cv.estimates, key=lambda e: (e.metric != "Revenue", e.year)), start=1) if e.diff is not None and abs(e.diff) >= 0.05}
+        add_table(slide, LM, y + 0.03, lw, rows, col_widths=[2.0] + [(lw - 2.0) / 6] * 6, row_h=0.25, font_size=8, cell_fills=fills,
+                  band_rows=[2, 4], left_cols=1)
+        yb = y + 0.03 + 0.25 * len(rows) + 0.22
+    else:
+        add_text(slide, LM, y + 0.1, lw, 0.4, (cv.note if cv else "") or "No consensus estimates available on Yahoo Finance.", size=8.5, italic=True,
+                 color=DARK_GREY, markup=False)
+        yb = y + 0.7
+    yb = add_section_header(slide, LM, yb, lw, "Variant view, estimate momentum and catalysts", 2)
+    add_rect(slide, LM, yb, lw, FOOTER_Y - 0.12 - yb, fill=LIGHT_GREY)
+    items = list(r.narrative.get("consensus", [])) + list(r.narrative.get("catalysts", []))
+    add_bullets(slide, LM + 0.02, yb + 0.05, lw - 0.04, FOOTER_Y - 0.22 - yb, items or ["No consensus data"], size=8.2)
+    rx = LM + lw + 0.3
+    rw = SW - LM - rx
+    y = add_section_header(slide, rx, top, rw, "What moves the value – one driver at a time", 3)
+    add_rect(slide, rx, y, rw, FOOTER_Y - 0.12 - y, fill=WHITE, line=NAVY, line_w=0.75)
+    if "tornado" in ctx.charts:
+        add_picture_fit(slide, ctx.charts["tornado"], rx + 0.08, y + 0.08, rw - 0.16, FOOTER_Y - 0.3 - y)
+    _footer(slide, ctx, r.cfg.sources_note + "; consensus: Yahoo Finance (mean of analyst estimates), revisions over 90 days; "
+                                             "value drivers move one input at a time with everything else at the base case")
 
 
 # =============================================================================
@@ -997,6 +1123,20 @@ def render_deck_charts(result, charts_dir: Path) -> dict[str, Path]:
             if key in mh.stats:
                 out[f"hist_{key}"] = C.band_chart(mh.series[key], mh.stats[key], charts_dir / f"hist_{key}.png",
                                                   label=f"{r.cfg.display_short} trailing {label}")
+    vd = [v for v in (getattr(r, "value_drivers", None) or []) if np.isfinite(v.value_down) and np.isfinite(v.value_up)]
+    if len(vd) >= 2:
+        out["tornado"] = C.tornado_chart(vd, vd[0].base, r.price, charts_dir / "tornado.png", currency=r.price_currency, size=(5.0, 4.4))
+    reg = getattr(r.comps, "regression", None)
+    if reg is not None and "growth_reg" in reg.coefficients and reg.actual_target:
+        pts = [{"name": p["name"], "x": p["growth_reg"] * 100, "y": p["actual"]} for p in reg.fitted_peers if "growth_reg" in p]
+        gt = reg.target_inputs.get("growth_reg")
+        if pts and gt is not None:
+            # the line is the fit at the target's own margin, so the chart is a plane cut through the target
+            offset = reg.coefficients.get("ebitda_margin", 0.0) * reg.target_inputs.get("ebitda_margin", 0.0)
+            out["mult_regression"] = C.scatter_regression_chart(
+                pts, {"name": r.cfg.display_short, "x": gt * 100, "y": reg.actual_target}, charts_dir / "mult_regression.png",
+                line=(reg.intercept + offset, reg.coefficients["growth_reg"] / 100), fitted_target=reg.fitted_target,
+                x_label="Expected revenue growth, consensus FY1", line_label=f"Fit at {r.cfg.display_short}'s margin (R² {reg.r2:.2f})", size=(5.1, 2.75))
     return out
 
 
@@ -1029,6 +1169,8 @@ def build_deck(result, out_path: str | Path, charts_dir: str | Path | None = Non
         _appendix_scenarios(prs, ctx)
         _appendix_peers(prs, ctx)
         _appendix_history(prs, ctx)
+        _appendix_consensus(prs, ctx)
+        _appendix_multiples(prs, ctx)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(out_path))
     return out_path

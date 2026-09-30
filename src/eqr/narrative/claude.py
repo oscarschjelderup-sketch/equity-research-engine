@@ -17,11 +17,11 @@ from .rules import NARRATIVE_KEYS
 DEFAULT_MODEL = "claude-opus-5"
 
 LIST_KEYS = {"highlights", "opportunities", "disruption", "threats", "financial_commentary", "thesis", "multiples_commentary", "risks",
-             "market_implied", "scenario_commentary"}
+             "market_implied", "scenario_commentary", "consensus", "catalysts", "multiples_depth"}
 MAX_ITEMS = {"highlights": 4, "opportunities": 3, "disruption": 3, "threats": 3, "financial_commentary": 6, "thesis": 4,
-             "multiples_commentary": 4, "risks": 4, "market_implied": 3, "scenario_commentary": 4}
+             "multiples_commentary": 4, "risks": 4, "market_implied": 3, "scenario_commentary": 4, "consensus": 4, "catalysts": 3, "multiples_depth": 5}
 # Blocks that are pure arithmetic: Claude may not rewrite them (numbers must stay exact).
-LOCKED_KEYS = {"market_implied", "scenario_commentary", "valuation_headline"}
+LOCKED_KEYS = {"market_implied", "scenario_commentary", "valuation_headline", "consensus", "catalysts", "multiples_depth"}
 
 SYSTEM_PROMPT = """You are a sell-side equity research analyst writing the text for a four-slide investment case
 (Company overview, Market overview, Financials and estimates, Valuation and recommendation) in the concise, factual

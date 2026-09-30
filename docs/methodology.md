@@ -11,7 +11,9 @@ input in the case YAML, and every output can be traced back to a statement line 
 | Annual income statement, balance sheet, cash flow | Yahoo Finance (`yfinance`) | Typically 4 fiscal years |
 | Share price, shares outstanding, 52-week range | Yahoo Finance | Price in the listing currency (GBp converted to GBP) |
 | Weekly prices, 5 years, stock and index | Yahoo Finance | Used for beta and relative performance |
-| Consensus revenue / EPS estimates, price targets, ratings | Yahoo Finance | Optional; used as growth anchor and for the "street view" |
+| Consensus revenue / EPS estimates, price targets, ratings | Yahoo Finance | Optional; growth anchor, the "street view" and the estimates-vs-consensus table |
+| Quarterly income statement and balance sheet | Yahoo Finance | Last-twelve-month figures and the latest net debt (section 5 and 6) |
+| EPS revision trend, results and ex-dividend calendar, indicated dividend | Yahoo Finance | Estimate momentum, catalysts, the dividend in the target price |
 | Peer statements and market data | Yahoo Finance | Same treatment as the target company |
 | FX spot rates | Yahoo Finance (`EURNOK=X` etc.) | Only for displaying peer market caps in the target currency |
 | Longer history / restated figures | Analyst CSV or XLSX (`history_csv`) | Overrides or extends the Yahoo history |
@@ -61,6 +63,27 @@ ROE, ROIC (NOPAT / invested capital), payout ratio.
 
 The terminal row normalises the last explicit year by `(1 + g)`.
 
+### Year 1 from the reported quarters (nowcast)
+
+Half-way through a year the first forecast year is half known, and a margin path that starts from the last annual margin
+ignores it. With `nowcast: true` (default) year 1 is built from what is reported:
+
+* revenue FY0 = year-to-date revenue + last year's remaining quarters × (1 + g), with `g` the consensus growth for the
+  year where it exists, otherwise the year-to-date growth – using last year's *same quarters* keeps the seasonality
+  (Kid earns its year in Q4);
+* EBITDA FY0 = year-to-date EBITDA + remaining revenue × (last year's margin in those quarters + the year-to-date margin
+  change), the change capped at the smaller of 8pp and a quarter of last year's margin (+1pp is a quarter of an IT
+  reseller's margin, nothing for a rig owner); quarterly EBITDA is put on the model's lease basis by scaling the annual
+  lease cost with revenue, as the LTM figures are.
+
+Only the year-1 growth and margin drivers move; the growth path from year 2 keeps its anchor (this year's momentum is a
+level effect, not a new long-run rate) and the margin path runs from the nowcast level to the same target. Both stay
+visible inputs in the Excel model, with the arithmetic in the notes. The nowcast is refused, with the reason in the
+warnings, when quarters are missing or do not add up to the annual figures, and when the year-to-date margin swings more
+than 20pp against a year earlier – an impairment, a disposal gain or a data error, not a run-rate. SATS: two reported
+quarters at +4.9% revenue and a 16.7% margin (17.0% a year earlier) put 2026E EPS 17% below consensus – the flat first
+half is the reason, and the slide says so.
+
 ## 4. Cost of capital
 
 * **Beta**: 3-year weekly OLS regression of log returns against the configured index. If R² is below
@@ -73,14 +96,36 @@ The terminal row normalises the last explicit year by `(1 + g)`.
   set a number in YAML to override.
 * **Cost of debt** = interest expense (excluding estimated lease interest) / average debt, clipped 2–12%, after tax.
 * **Weights**: market cap and gross debt on the chosen lease basis (`debt_weight` overrides).
+* **Bottom-up beta (cross-check, or `beta_method: peers`)**: a single stock's regression beta is noisy, so every peer's Yahoo
+  beta is unlevered with its own debt/equity (Hamada, `βu = βL / (1 + (1 − t) × D/E)`, tax at the corporate rate), the median
+  is taken (betas outside 0.1–3 and D/E above 5 are ignored, at least three peers are required) and relevered at the target's
+  D/E, then Blume-adjusted and clipped like the regression beta. It is always shown next to the beta used (SATS: 0.83 bottom-up
+  vs 0.89 used; Bouvet 0.78 against the 0.60 floor it sits on), and `beta_method: peers` makes it the beta in the WACC.
 
 ## 5. DCF
 
 Unlevered FCF for each explicit year is discounted at WACC (end-year by default, `mid_year_convention` available).
-Terminal value uses Gordon growth on the terminal-year FCF and is discounted from year N. Equity value =
-EV − net debt − minorities; value per share uses current shares outstanding. The 7 × 7 sensitivity grid
+Terminal value uses Gordon growth on the terminal-year FCF. Equity value = EV − net debt − minorities; value per share
+uses current shares outstanding. The 7 × 7 sensitivity grid
 varies WACC (±0.5% steps) and terminal growth (±0.25% steps); the football-field DCF range is the inner 3 × 3.
 The implied exit EV/EBITDA (terminal value / final-year EBITDA) is reported as a sanity check.
+
+### Valuation date and the stub period
+
+The forecast years are fiscal years, but the share price is today's. A DCF discounted to the last fiscal year-end is a
+value as at that date: in September it is nine months old, and a 12-month target built on it is really a three-month
+target. The engine therefore values the company **at the valuation date** (the run date, or `valuation_date`) and takes
+net debt from the **latest quarterly balance sheet**. With `v` = years from the fiscal year-end to the valuation date
+and `b` = years to the balance-sheet date:
+
+* year 1 counts only the share `1 − b` of its cash flow – the part before the balance-sheet date is already in net debt –
+  discounted over `1 − v` years (`(1 + b)/2 − v` with the mid-year convention);
+* year `i ≥ 2` is discounted over `i − v` years (less 0.5 mid-year), the terminal value over `N − v` years.
+
+SATS on 21 September 2026: `v` = 0.72, `b` = 0.50 (June balance sheet), fair value NOK 44.66 against NOK 43.50 on the
+year-end basis with the same data. With `v = b = 0` this is exactly the textbook DCF (the golden test pins that), and with `v = b = 1` it equals a
+DCF of the remaining years. The sensitivity grid, the scenarios, the reverse DCF, the value drivers, the Excel formulas and the
+dashboard's JavaScript all use the same two offsets. `stub_period: false` values the company at the balance-sheet date.
 
 ### Listing currency vs reporting currency
 
@@ -93,11 +138,58 @@ are converted to pounds first.
 
 ## 6. Peer multiples
 
-For every peer: EV = market cap + net debt (same lease basis as the target) + minorities; multiples on the
-last reported fiscal year (EV/Sales, EV/EBITDA, EV/EBIT) plus Yahoo's trailing and forward P/E. Multiples outside
+For the target and every peer: EV = market cap today + net debt from the latest balance sheet (same lease basis as the
+target) + minorities, over **last-twelve-month** revenue, EBITDA and EBIT, plus trailing (TTM) P/E and the forward multiples
+of section 6b. The market cap is converted from the **listing currency to the reporting currency** before it meets the
+statements: Bakkafrost trades in NOK and reports in DKK, and a NOK market cap over DKK EBITDA overstates the multiple by a
+third (the pipeline warns when the FX rate is missing). The target's own P/E uses the same trailing EPS. LTM is the sum of the four latest quarters when all are reported, otherwise the
+last fiscal year + year-to-date − the same quarters a year earlier. Lease cost and lease interest are carried over from the
+fiscal year, scaled with LTM revenue. LTM falls back to the fiscal year, and says why, when a quarter is missing, when
+Yahoo's quarterly EBITDA does not add up to the annual figure (definitions differ), or when the result is implausible; the
+basis of each peer is in the peer table. Multiples outside
 (0, 60x) — or (0, 80x) for P/E — are treated as not meaningful. Statistics (mean, median, 25th/75th percentile) are
-computed per group and for the full set. Implied values apply the pooled median to the target's LTM metric and
-bridge to equity value per share; the 25th–75th percentile range feeds the football field.
+computed per group and for the full set. Implied values apply the pooled median to the target's own metric (LTM EBITDA,
+EBIT and revenue, trailing EPS, NTM EPS and NTM revenue) and bridge to equity value per share; the 25th–75th percentile
+range feeds the football field.
+
+### 6b. Forward multiples, calendarised
+
+Consensus comes by fiscal year, and fiscal years differ (Clas Ohlson and Rusta end in April, most others in December).
+Comparing "FY1 P/E" across them compares different periods. Every company is therefore put on the same clock: with `w` =
+the share of the fiscal year in progress (FY0) still ahead at the valuation date,
+
+`NTM = w × FY0 + (1 − w) × FY1`
+
+for consensus revenue and EPS. Yahoo's "0y" is taken as FY0 only when the year-ago revenue it quotes matches the last
+reported fiscal year within 3%, so the years are known to line up. The same check settles **which currency the table is
+in**, because Yahoo is inconsistent: Equinor, Mowi, Bakkafrost and Shell come in the reporting currency, Yara and Hafnia in
+the listing currency (NOK on USD accounts). A year-ago revenue that matches the accounts once converted at the listing
+rate marks a listing-currency table, and revenue and EPS are converted accordingly – before this Yara showed a 0.8x forward
+P/E and Shell 918x. Yahoo's own `trailingEps`, `forwardEps` and `dividendRate` are in the listing currency (pounds, not
+pence, for London), and are used as they are. From this: **EV/Sales (NTM)**, **P/E (NTM)**, **P/E on FY0
+and FY1**, **consensus EPS growth** FY1/FY0 and **PEG** = NTM P/E / EPS growth (only above 2% growth). **EV/EBITDA (NTM)** is
+a proxy – NTM revenue at the LTM EBITDA margin – because Yahoo carries no EBITDA consensus; it is labelled as such
+everywhere. Two quality measures sit beside them: **levered FCF yield** (operating cash flow + capex − lease principal, over
+the market cap) and the **dividend yield** on the indicated dividend; yields outside ±25% (±20% for dividends) are treated as
+data errors (Yahoo shows a 145% dividend yield for Grieg Seafood).
+
+### 6c. What sets the multiples – the regression
+
+A peer median assumes every peer deserves the same multiple. A regression of the peers' EV/EBITDA on the two drivers that
+should set it – expected revenue growth (consensus FY1, last fiscal year where there is no consensus) and EBITDA margin –
+gives a *fundamentals-justified* multiple for the target and splits its gap to the median in two:
+
+* **explained** = fitted / median − 1: the premium or discount the fundamentals justify;
+* **unexplained** = actual / fitted − 1: what the fundamentals do not explain – mispricing, or something the model does not
+  see (leverage, geography, liquidity, the cycle).
+
+Ordinary least squares with an intercept; two regressors need six peers, one needs four; a regressor with no variation
+across the peers is dropped. The fit is drawn on the multiples slide as a line through the target's own margin. Its
+strength decides how it is used: with **R² ≥ 0.15** the regression-implied value (± one residual standard deviation) is a
+football-field bar; below that it is reported with a warning and not used as an anchor. Across SATS's eleven fitness and
+Nordic consumer peers growth and margin explain 6% of the dispersion in EV/EBITDA: the honest reading is that this group is
+priced on something else, and the slide says so. The Excel model carries the coefficients as inputs and the fitted
+multiple and implied value as live formulas.
 
 ### Terminal value
 
@@ -128,6 +220,23 @@ lag), giving trailing EV/EBITDA and P/E series on the model's lease basis. Multi
 are dropped, so a recovery year with near-zero earnings cannot stretch the band. The median and interquartile band give
 "cheap or dear against its own history", one more football-field bar and an implied value at the company's own median.
 
+### Value drivers (tornado)
+
+One input at a time is moved by the step a portfolio manager asks about first – EBITDA margin ±1pp and revenue growth ±1pp
+in every forecast year, WACC ±0.5pp, terminal growth ±0.5pp, capex ±0.5pp of revenue, working capital ±2pp of revenue,
+tax ±2pp – with everything else at the base case, and the full forecast and DCF re-run. Sorted by swing, the chart shows
+which assumption the value actually rests on (SATS: margin ±1pp moves fair value NOK 40.9–48.4; WACC ±0.5pp NOK 41.3–48.5).
+
+### Estimates vs consensus, estimate momentum and catalysts
+
+Our revenue and EPS for the current and next fiscal year are lined up with the Yahoo consensus (mean, low, high, number of
+analysts) after checking that Yahoo's "current year" is our first forecast year (its year-ago revenue must match our last
+actual year). Revenue growth is anchored on consensus by default, so the revenue gap is small by construction; the
+differentiated view sits in EPS (margins, tax, financing). A figure outside the analysts' range is flagged. The 90-day
+change in consensus EPS and the number of upward and downward revisions over 30 days give the estimate momentum
+(positive / negative / mixed / flat); a BUY against falling estimates, or a SELL against rising ones, is called out as a
+tension. The next results date (with the quarter's consensus) and a coming ex-dividend date are listed as catalysts.
+
 ### Cross-check of the anchors
 
 The DCF fair value is compared with the peer-multiple value (both today's values) and our 12-month target with the consensus
@@ -138,13 +247,31 @@ the DCF assumptions, not a result.
 ## 7. Recommendation
 
 Fair value today = DCF value per share (`tp_method: dcf`) or a weighted blend of DCF and the median multiple-implied
-value (`tp_method: blend`). The **12-month target price** rolls that value forward at the cost of equity and deducts the
-dividend expected over the period (last year's cash dividend per share):
+value (`tp_method: blend`), both at the valuation date. The **12-month target price** rolls that value forward at the cost
+of equity and deducts the dividend expected over the period – Yahoo's indicated annual dividend when it gives a yield
+between 0% and 20%, otherwise the cash dividend paid in the last fiscal year (`dividend_source`):
 
 `target price = fair value × (1 + Ke)^(months / 12) − DPS`, rounded to `tp_rounding` (half away from zero, like Excel's MROUND).
 
 The rating is set on the expected total return, `(target price + DPS) / price − 1`: BUY at ≥ 15%, SELL at ≤ −10%, else HOLD
 (thresholds configurable; `roll_forward: false` sets the target price equal to today's fair value).
+
+### Research note
+
+`<TICKER>_note.html` (and `.pdf` with `--pdf`, printed by headless Edge or Chrome) is the front page of a sell-side report:
+rating, 12-month target, total return and the agreement of the anchors; the investment case, where we differ from consensus
+and the key risks; key data (market cap, EV, net debt, free float, average daily turnover, 52-week range, dividend yield,
+next results); a two-year share price chart; and the key figures table – revenue, growth, EBITDA, margin, EBIT, EPS, and
+EV/EBITDA, P/E and FCF yield at today's price, for the last two actual and next three forecast years.
+
+### Coverage log and the public site
+
+Every `eqr run` appends the date, price, rating, target, fair value, expected total return and the agreement of the anchors
+to `coverage/history.csv` (a re-run the same day replaces its row). `eqr site` builds a static page from the generated cases
+and the log – rating, target and multiples per company, links to the note, dashboard, deck and model, and a track record:
+first call, price then, latest price and the return since, plus the full log – and a GitHub Actions workflow publishes it
+to GitHub Pages on every push. The return is the share price change from the log, so a reader can check the calls, including
+the wrong ones.
 
 ## 8. Narrative
 
@@ -208,8 +335,18 @@ missing or unreadable file produces a warning, not a failure.
 
 ## 11. Known limitations
 
+* **Seasonal balance sheets.** The stub period spreads year-1 cash flow evenly over the year and takes net debt as reported
+  at the last quarter. For seasonal businesses that quarter carries seasonal working capital and the dividend: Kid's net debt
+  is NOK 1,081m in June against NOK 722m at the year-end, which lowers the value by about NOK 2.4 per share against the
+  year-end basis. Set `latest_balance_sheet: false` (and a year-end `valuation_date`) where that distorts the case.
 * Yahoo Finance carries ~4 annual periods and no segment data; longer history or segments come from analyst files.
-* Peer multiples are on the last fiscal year, not LTM or forward consensus (Yahoo has no peer-level forward EBITDA).
+* Forward EV/EBITDA is a proxy (NTM consensus revenue at the LTM margin): Yahoo has forward EPS and revenue but no
+  forward EBITDA, so a margin change the street expects is not in it.
+* The multiples regression uses two regressors on small peer groups; it is a decomposition of the gap to the median, not a
+  pricing model, and it is only an anchor when it explains a reasonable share of the dispersion.
+* The nowcast takes the reported half-year as it is: a one-off inside a quarter that stays below the 20pp refusal limit
+  flows into the year. Yahoo's quarterly statements are patchier than its annual ones (Mowi's quarterly EBITDA is missing
+  for some quarters), in which case the year is forecast from the annual accounts and says so.
 * Lease interest is an estimate (liability × rate); a company-specific rate can be set per case.
 * Net income forecasts (for forward P/E) are approximated as (EBIT − interest) × (1 − t).
 * Outputs are for illustration and education, not investment advice.

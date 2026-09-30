@@ -311,6 +311,85 @@ def football_field_chart(bars: Sequence, price: float | None, target: float | No
     return _save(fig, path)
 
 
+def scatter_regression_chart(points: Sequence[dict], target: dict, path: str | Path, *, line: tuple[float, float] | None = None,
+                             fitted_target: float | None = None, x_label: str = "Expected revenue growth", y_label: str = "EV/EBITDA (x)",
+                             line_label: str = "Regression", size=(4.6, 2.9)) -> Path:
+    """Peers as points (``name``, ``x`` in %, ``y``), the target highlighted, an optional fitted line (intercept, slope per %)."""
+    fig, ax = _fig(size)
+    ax.spines["bottom"].set_visible(True)
+    ax.spines["left"].set_visible(True)
+    ax.tick_params(axis="y", labelleft=True, length=2, labelsize=6.5)
+    ax.tick_params(axis="x", labelsize=6.5, length=2)
+    ax.yaxis.grid(True, color=hx(LIGHT_GREY), linewidth=0.5)
+    ax.set_axisbelow(True)
+    xs = [float(p["x"]) for p in points]
+    ys = [float(p["y"]) for p in points]
+    ax.scatter(xs, ys, s=22, color=hx(LIGHT_BLUE), zorder=3, label="Peers")
+    for p in points:
+        ax.annotate(str(p["name"]), (float(p["x"]), float(p["y"])), xytext=(4, 3), textcoords="offset points", fontsize=5.8, color=hx(DARK_GREY))
+    tx, ty = float(target["x"]), float(target["y"])
+    ax.scatter([tx], [ty], s=48, color=hx(GREEN), zorder=5, label=str(target.get("name", "Target")))
+    ax.annotate(str(target.get("name", "")), (tx, ty), xytext=(6, -11), textcoords="offset points", fontsize=6.5, color=hx(GREEN), fontweight="bold",
+                bbox={"boxstyle": "square,pad=0.1", "facecolor": "white", "edgecolor": "none"}, zorder=7)
+    all_x = xs + [tx]
+    lo, hi = min(all_x), max(all_x)
+    pad = (hi - lo) * 0.12 or 1.0
+    if line is not None:
+        a, b = line
+        gx = np.array([lo - pad, hi + pad])
+        ax.plot(gx, a + b * gx, color=hx(GREY), linestyle="--", linewidth=1.1, zorder=2, label=line_label)
+    if fitted_target is not None:
+        ax.scatter([tx], [fitted_target], s=60, facecolors="white", edgecolors=hx(GREEN), linewidths=1.4, zorder=6, label="Fitted for target")
+    ax.set_xlim(lo - pad, hi + pad)
+    ax.set_xlabel(f"{x_label} (%)", fontsize=6.5, color=hx(DARK_GREY))
+    ax.set_ylabel(y_label, fontsize=6.5, color=hx(DARK_GREY))
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=4, fontsize=6.3, handlelength=1.4, columnspacing=1.0, markerscale=0.8)
+    return _save(fig, path)
+
+
+def tornado_chart(items: Sequence, base: float, price: float | None, path: str | Path, *, currency: str = "",
+                  size=(4.6, 3.0)) -> Path:
+    """One-at-a-time value sensitivities: bars from the base value to the value with each driver lowered / raised.
+
+    ``items`` need ``driver``, ``shock``, ``value_down`` and ``value_up`` (largest swing first).
+    """
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    fig, ax = _fig(size)
+    ax.spines["bottom"].set_visible(True)
+    ax.tick_params(axis="y", labelleft=True, length=0)
+    ax.tick_params(axis="x", labelsize=6.5, length=2)
+    ax.xaxis.grid(True, color=hx(LIGHT_GREY), linewidth=0.5)
+    ax.set_axisbelow(True)
+    rows = [it for it in items if np.isfinite(it.value_down) and np.isfinite(it.value_up)][::-1]
+    y = np.arange(len(rows))
+    pad = {"boxstyle": "square,pad=0.12", "facecolor": "white", "edgecolor": "none"}
+    vals = [base] + ([price] if price else [])
+    for yi, it in zip(y, rows):
+        for val, colour in ((it.value_down, LIGHT_BLUE), (it.value_up, NAVY)):
+            ax.barh(yi, val - base, left=base, height=0.55, color=hx(colour), zorder=3)
+            right = val >= base
+            ax.annotate(f"{val:,.1f}", (val, yi), xytext=(3 if right else -3, 0), textcoords="offset points", ha="left" if right else "right",
+                        va="center", fontsize=6.5, color=hx(DARK_GREY), bbox=pad, zorder=6)
+            vals.append(val)
+    ax.set_yticks(y)
+    ax.set_yticklabels([f"{it.driver} {it.shock}" for it in rows], fontsize=6.5)
+    ax.axvline(base, color=hx(NAVY), linewidth=1.0, zorder=4)
+    handles = [Patch(color=hx(LIGHT_BLUE), label="Driver lowered"), Patch(color=hx(NAVY), label="Driver raised"),
+               Line2D([0], [0], color=hx(NAVY), lw=1.0, label=f"Base {base:,.2f}")]
+    if price:
+        ax.axvline(price, color=hx(RED), linestyle="--", linewidth=1.1, zorder=4)
+        handles.append(Line2D([0], [0], color=hx(RED), ls="--", lw=1.1, label=f"Current price {price:,.2f}"))
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=4, fontsize=6.5, handlelength=1.2, columnspacing=1.0)
+    lo, hi = min(vals), max(vals)
+    span = hi - lo or 1.0
+    ax.set_xlim(lo - span * 0.14, hi + span * 0.14)
+    if currency:
+        ax.set_xlabel(f"{currency} per share (fair value today)", fontsize=6.5, color=hx(DARK_GREY))
+    return _save(fig, path)
+
+
 def value_bars_chart(items: Sequence[tuple[str, float | None]], path: str | Path, *, size=(2.2, 2.2), base_index: int = 0,
                      colors: Sequence[str] | None = None, decimals: int = 2, title: str | None = None) -> Path:
     """Small bars (e.g. current price vs DCF value) annotated with % difference vs the base bar."""

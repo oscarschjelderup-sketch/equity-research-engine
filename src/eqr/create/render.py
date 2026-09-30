@@ -29,24 +29,29 @@ def export_pdf(pptx_path: str | Path, pdf_path: str | Path | None = None) -> Pat
     pptx_path = Path(pptx_path).resolve()
     pdf_path = Path(pdf_path).resolve() if pdf_path else pptx_path.with_suffix(".pdf")
     if sys.platform.startswith("win"):
-        try:
-            import pythoncom  # type: ignore
-            import win32com.client  # type: ignore
+        import time
 
-            pythoncom.CoInitialize()
-            app = win32com.client.Dispatch("PowerPoint.Application")
-            pres = app.Presentations.Open(str(pptx_path), WithWindow=False)
+        last: Exception = RuntimeError("PowerPoint export failed")
+        for attempt in range(3):  # PowerPoint can still be busy right after the slide export: retry before giving up
             try:
-                pres.SaveAs(str(pdf_path), 32)  # ppSaveAsPDF
-            finally:
-                pres.Close()
+                import pythoncom  # type: ignore
+                import win32com.client  # type: ignore
+
+                pythoncom.CoInitialize()
+                app = win32com.client.Dispatch("PowerPoint.Application")
+                pres = app.Presentations.Open(str(pptx_path), WithWindow=False)
                 try:
-                    app.Quit()
-                except Exception:
-                    pass
-            return pdf_path
-        except Exception as exc:  # pragma: no cover - depends on Office
-            last: Exception = exc
+                    pres.SaveAs(str(pdf_path), 32)  # ppSaveAsPDF
+                finally:
+                    pres.Close()
+                    try:
+                        app.Quit()
+                    except Exception:
+                        pass
+                return pdf_path
+            except Exception as exc:  # pragma: no cover - depends on Office
+                last = exc
+                time.sleep(2.0 * (attempt + 1))
     else:
         last = RuntimeError("PowerPoint COM export is only available on Windows")
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
@@ -54,6 +59,43 @@ def export_pdf(pptx_path: str | Path, pdf_path: str | Path | None = None) -> Pat
         subprocess.run([soffice, "--headless", "--convert-to", "pdf", "--outdir", str(pdf_path.parent), str(pptx_path)], check=True, capture_output=True)
         return pdf_path
     raise RuntimeError(f"Could not export PDF: {last}")
+
+
+BROWSERS = [
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+]
+
+
+def find_browser() -> str | None:
+    for name in ("msedge", "google-chrome", "chromium", "chromium-browser", "chrome"):
+        exe = shutil.which(name)
+        if exe:
+            return exe
+    return next((p for p in BROWSERS if Path(p).exists()), None)
+
+
+def html_to_pdf(html_path: str | Path, pdf_path: str | Path | None = None, timeout: float = 120.0) -> Path:
+    """Print an HTML page to PDF with a headless Chromium browser (Edge or Chrome)."""
+    import time
+
+    html_path = Path(html_path).resolve()
+    pdf_path = Path(pdf_path).resolve() if pdf_path else html_path.with_suffix(".pdf")
+    exe = find_browser()
+    if exe is None:
+        raise RuntimeError("No Chromium browser (Edge or Chrome) found to print the note to PDF.")
+    if pdf_path.exists():
+        pdf_path.unlink()
+    subprocess.run([exe, "--headless=new", "--disable-gpu", "--no-pdf-header-footer", "--print-to-pdf-no-header",
+                    f"--print-to-pdf={pdf_path}", html_path.as_uri()], check=False, capture_output=True, timeout=timeout)
+    for _ in range(40):  # the browser can write the file a moment after it exits
+        if pdf_path.exists() and pdf_path.stat().st_size > 0:
+            return pdf_path
+        time.sleep(0.25)
+    raise RuntimeError(f"The browser did not write {pdf_path.name}.")
 
 
 def _export_powerpoint(pptx_path: Path, out_dir: Path, width: int) -> list[Path]:

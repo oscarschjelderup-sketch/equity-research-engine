@@ -41,9 +41,52 @@ class WaccResult:
     wacc: float
     overridden: bool = False
     size_premium_source: str = ""
+    peer_beta: PeerBeta | None = None  # bottom-up cross-check (always computed when peers exist)
 
     def as_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class PeerBeta:
+    """Bottom-up beta: peer betas unlevered (Hamada), median, relevered at the target's debt/equity."""
+
+    unlevered_median: float
+    relevered_raw: float  # before the Blume adjustment
+    relevered_adjusted: float  # Blume-adjusted and clipped like the regression beta
+    n: int
+    target_debt_to_equity: float
+    tax_rate: float
+    peers: list[dict]
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+def unlever(beta: float, debt_to_equity: float, tax: float) -> float:
+    return beta / (1 + (1 - tax) * max(debt_to_equity, 0.0))
+
+
+def relever(beta_u: float, debt_to_equity: float, tax: float) -> float:
+    return beta_u * (1 + (1 - tax) * max(debt_to_equity, 0.0))
+
+
+def bottom_up_beta(peers: list[dict], target_debt_to_equity: float, tax: float, *, blume: bool = True, floor: float = 0.6,
+                   cap: float = 1.8, min_peers: int = 3) -> PeerBeta | None:
+    """``peers``: dicts with ticker, beta (levered, raw) and debt_to_equity. Betas outside (0.1, 3) are ignored."""
+    rows = []
+    for p in peers:
+        b, de = p.get("beta"), p.get("debt_to_equity")
+        if b is None or de is None or not np.isfinite(b) or not np.isfinite(de) or not 0.1 < b < 3.0 or de < 0 or de > 5:
+            continue
+        rows.append({"ticker": p.get("ticker"), "beta": float(b), "debt_to_equity": float(de), "unlevered": unlever(float(b), float(de), tax)})
+    if len(rows) < min_peers:
+        return None
+    bu = float(np.median([r["unlevered"] for r in rows]))
+    raw = relever(bu, target_debt_to_equity, tax)
+    adj = 0.67 * raw + 0.33 if blume else raw
+    return PeerBeta(unlevered_median=bu, relevered_raw=float(raw), relevered_adjusted=float(min(max(adj, floor), cap)), n=len(rows),
+                    target_debt_to_equity=float(target_debt_to_equity), tax_rate=float(tax), peers=rows)
 
 
 def regression_beta(stock: pd.Series, index: pd.Series, years: int = 3) -> tuple[float, float, int] | None:
@@ -78,11 +121,14 @@ def compute_wacc(
     stock_prices: pd.Series | None,
     index_prices: pd.Series | None,
     market_cap_usd: float | None = None,
+    peer_betas: list[dict] | None = None,
 ) -> WaccResult:
     w = cfg.wacc
     a = cfg.assumptions
     # the interest tax shield is earned at the corporate rate, even when the operating tax rate is higher (petroleum tax)
     tax = float(a.tax_rate) if a.tax_rate is not None else float(a.statutory_tax_rate)
+    target_de = float(total_debt) / float(market_cap) if market_cap and market_cap > 0 else 0.0
+    peer_beta = bottom_up_beta(peer_betas or [], target_de, tax, blume=w.blume_adjust, floor=w.beta_floor, cap=w.beta_cap)
     if isinstance(w.size_premium, str):
         size_premium, size_src = auto_size_premium(market_cap_usd)
     else:
@@ -94,6 +140,10 @@ def compute_wacc(
     source = ""
     if w.beta_method == "manual" and w.beta is not None:
         beta_raw, source = float(w.beta), "manual"
+    elif w.beta_method == "peers" and peer_beta is not None:
+        beta_raw = peer_beta.relevered_raw
+        source = (f"bottom-up: median unlevered beta of {peer_beta.n} peers ({peer_beta.unlevered_median:.2f}) "
+                  f"relevered at D/E {target_de:.2f}")
     elif w.beta_method == "yahoo" and yahoo_beta:
         beta_raw, source = float(yahoo_beta), "Yahoo Finance"
     else:
@@ -150,5 +200,5 @@ def compute_wacc(
         beta_source=source, beta_r2=r2, size_premium=size_premium, cost_of_equity=cost_of_equity,
         cost_of_debt_pretax=kd, cost_of_debt_source=kd_src, tax_rate=tax, cost_of_debt_after_tax=kd_after,
         equity_value=e, debt_value=d, weight_equity=we, weight_debt=wd, wacc=float(wacc), overridden=overridden,
-        size_premium_source=size_src,
+        size_premium_source=size_src, peer_beta=peer_beta,
     )

@@ -46,6 +46,7 @@ TEMPLATE = r"""<!doctype html>
   td.est { background: #f6f8fb; }
   .sens td { text-align: center; } .sens th:first-child { text-align: center; }
   .sens th, .sens td { font-size: 11px; padding: 5px 3px; }  /* 8 columns must fit a one-third-width card */
+  #tbl-cons th, #tbl-cons td { font-size: 11px; padding: 5px 3px; }
   ul.b { margin: 6px 0 0; padding-left: 18px; } ul.b li { margin-bottom: 6px; line-height: 1.4; }
   .wrap { overflow-x: auto; }
   .muted { color: var(--muted); font-size: 12px; }
@@ -90,6 +91,9 @@ TEMPLATE = r"""<!doctype html>
       <div class="card"><h3>Revenue and EBITDA</h3><div class="chart"><canvas id="c-rev"></canvas></div></div>
       <div class="card"><h3>Margins</h3><div class="chart"><canvas id="c-margin"></canvas></div></div>
       <div class="card"><h3>Investment highlights</h3><ul class="b" id="l-highlights"></ul><h3 style="margin-top:14px">Key risks</h3><ul class="b" id="l-risks"></ul></div>
+      <div class="card wrap"><h3>Our estimates vs consensus</h3><table id="tbl-cons"></table><ul class="b" id="l-cons" style="margin-top:10px"></ul></div>
+      <div class="card"><h3>Estimate momentum and catalysts</h3><div class="tiles" id="tiles-mom" style="margin-bottom:8px"></div><ul class="b" id="l-rev"></ul>
+        <h3 style="margin-top:14px">Coming up</h3><ul class="b" id="l-cat"></ul></div>
     </div>
   </section>
   <section id="financials">
@@ -124,16 +128,22 @@ TEMPLATE = r"""<!doctype html>
       <div class="card"><h3>Football field</h3><div class="chart" style="height:320px"><canvas id="c-ff"></canvas></div></div>
       <div class="card"><h3>Own multiples through time</h3><div class="chart" style="height:280px"><canvas id="c-hist"></canvas></div><div class="muted" id="t-hist" style="margin-top:6px"></div></div>
       <div class="card"><h3>Do the valuation anchors agree?</h3><div class="tiles" id="tiles-cc" style="margin-bottom:8px"></div><div id="t-cc" style="line-height:1.5"></div></div>
+      <div class="card"><h3>What moves the value – one driver at a time</h3><div class="chart" style="height:300px"><canvas id="c-tornado"></canvas></div>
+        <div class="muted" id="t-tornado" style="margin-top:6px"></div></div>
       <div class="card"><h3>Investment thesis</h3><ul class="b" id="l-thesis"></ul></div>
       <div class="card wrap"><h3>Multiple valuation</h3><ul class="b" id="l-mult"></ul><table id="tbl-impl" style="margin-top:10px"></table></div>
     </div>
   </section>
   <section id="peers">
     <div class="grid g2">
-      <div class="card"><h3>EV/EBITDA vs revenue growth</h3><div class="chart" style="height:340px"><canvas id="c-scatter"></canvas></div></div>
-      <div class="card"><h3>Peer statistics</h3><table id="tbl-stats"></table></div>
+      <div class="card"><h3>EV/EBITDA vs expected revenue growth</h3><div class="chart" style="height:340px"><canvas id="c-scatter"></canvas></div>
+        <div class="muted" id="t-scatter" style="margin-top:6px"></div></div>
+      <div class="card"><h3>What sets the multiples?</h3><div class="tiles" id="tiles-reg" style="margin-bottom:8px"></div><ul class="b" id="l-mdepth"></ul></div>
     </div>
-    <div class="card wrap" style="margin-top:16px"><h3>Peer group</h3><table id="tbl-peers"></table></div>
+    <div class="card wrap" style="margin-top:16px"><h3>Peer group – trailing (LTM) multiples</h3><table id="tbl-peers"></table></div>
+    <div class="card wrap" style="margin-top:16px"><h3>Peer group – forward multiples and quality (consensus, calendarised to the next twelve months)</h3>
+      <table id="tbl-fwdpeers"></table><div class="muted" id="t-fwdnote" style="margin-top:6px"></div></div>
+    <div class="card wrap" style="margin-top:16px"><h3>Peer statistics</h3><table id="tbl-stats"></table></div>
   </section>
   <section id="assumptions">
     <div class="grid g2">
@@ -163,7 +173,11 @@ const c = D.company, rec = D.recommendation, ccy = c.currency, pccy = c.price_cu
 
 // ---------------- header
 el('h-name').textContent = `${c.name} (${c.ticker})`;
-el('h-sub').textContent = `${c.sector || ''} · ${c.country || ''} · as of ${D.as_of} · narrative: ${D.narrative_mode}` + (pccy !== ccy ? ` · accounts in ${ccy}, share price in ${pccy}` : '');
+const dmy = s => s ? s.split('-').reverse().join('.') : '';
+const L = D.latest || {};
+el('h-sub').textContent = `${c.sector || ''} · ${c.country || ''} · valued at ${dmy(D.valuation_date || D.as_of)}` +
+  (L.net_debt_date ? ` · net debt ${dmy(L.net_debt_date)}` : '') + (L.basis ? ` · multiples ${L.basis}` : '') +
+  ` · narrative: ${D.narrative_mode}` + (pccy !== ccy ? ` · accounts in ${ccy}, share price in ${pccy}` : '');
 el('h-rating').textContent = rec.rating; el('h-rating').classList.add(rec.rating.replace(' ', '-'));
 el('h-price').textContent = `${pccy} ${fmtN(c.price, 2)}`;
 el('h-tp').textContent = `${pccy} ${fmtN(rec.target_price, 2)}`;
@@ -178,6 +192,8 @@ const showTab = name => {
   document.querySelectorAll('#tabs button').forEach(x => x.classList.remove('active'));
   document.querySelectorAll('main section').forEach(x => x.classList.remove('active'));
   btn.classList.add('active'); el(name).classList.add('active');
+  // charts created in a hidden tab have no size yet: size them now instead of waiting for a resize observer
+  if (window.Chart) Object.values(Chart.instances).forEach(ch => { if (ch.canvas.offsetParent) ch.resize(); });
   window.dispatchEvent(new Event('resize'));
 };
 document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => { history.replaceState(null, '', '#' + b.dataset.tab); showTab(b.dataset.tab); }));
@@ -190,9 +206,9 @@ const tiles = [
   ['Market cap', `${ccy} ${fmtN(c.market_cap)}m`, `EV ${ccy} ${fmtN(c.enterprise_value)}m`],
   [`Revenue ${last._index}A`, `${ccy} ${fmtN(last.revenue)}m`, `${fmtP(last.growth)} growth`],
   ['EBITDA margin', fmtP(last.ebitda_margin), `EBIT margin ${fmtP(last.ebit_margin)}`],
-  ['EV/EBITDA (LTM)', fmtX(D.comps.company.ev_ebitda), `Peer median ${fmtX((D.comps.stats['All|median'] || {}).ev_ebitda)}`],
-  ['P/E (LTM)', fmtX(D.comps.company.pe), `Fwd P/E ${fmtX(D.comps.company.fwd_pe)}`],
-  ['Net debt / EBITDA', fmtX(last.nd_to_ebitda), `Net debt ${ccy} ${fmtN(c.net_debt)}m`],
+  [`EV/EBITDA (${L.basis || 'LTM'})`, fmtX(D.comps.company.ev_ebitda), `Peer median ${fmtX((D.comps.stats['All|median'] || {}).ev_ebitda)}`],
+  ['P/E (trailing)', fmtX(D.comps.company.pe), `Fwd P/E ${fmtX(D.comps.company.fwd_pe)}`],
+  ['Net debt / EBITDA', fmtX(ok(L.ebitda) && L.ebitda > 0 ? c.net_debt / L.ebitda : last.nd_to_ebitda), `Net debt ${ccy} ${fmtN(c.net_debt)}m` + (L.net_debt_date ? ` (${dmy(L.net_debt_date)})` : '')],
   ['FCF margin', fmtP(last.ufcf_margin), `UFCF ${ccy} ${fmtN(last.ufcf)}m`],
   ['Consensus target', ok((c.consensus_target || {}).mean) ? `${pccy} ${fmtN(c.consensus_target.mean, 2)}` : '–', `${(D.comps.company && D.company.consensus_target && D.company.consensus_target.high) ? 'range ' + fmtN(c.consensus_target.low, 0) + '–' + fmtN(c.consensus_target.high, 0) : ''}`],
 ];
@@ -200,8 +216,26 @@ el('tiles').innerHTML = tiles.map(t => `<div class="tile"><div class="l">${t[0]}
 el('l-highlights').innerHTML = (D.narrative.highlights || []).map(x => `<li>${md(x)}</li>`).join('');
 el('l-risks').innerHTML = (D.narrative.risks || []).map(x => `<li>${md(x)}</li>`).join('');
 
+// ---------------- consensus, momentum, catalysts
+const cv = D.consensus || {}, est = cv.estimates || [];
+if (est.length) {
+  el('tbl-cons').innerHTML = `<tr><th>Estimate</th><th>Ours</th><th>Consensus</th><th>Diff.</th><th>Range</th><th>n</th></tr>` +
+    est.map(e => { const eps = e.metric === 'EPS', d = eps ? 2 : 0, unit = eps ? pccy : ccy + 'm';
+      return `<tr><td>${e.metric === 'Revenue' ? 'Rev.' : e.metric} ${e.year}E <span class="muted">${unit}</span></td><td>${fmtN(e.ours, d)}</td><td>${fmtN(e.consensus, d)}</td>` +
+        `<td class="${ok(e.diff) && Math.abs(e.diff) >= 0.005 ? (e.diff > 0 ? 'up' : 'down') : ''}">${fmtP(e.diff, 1, true)}</td><td>${fmtN(e.low, d)}–${fmtN(e.high, d)}${e.outside_range ? ' ⚠' : ''}</td><td>${e.n_analysts || '–'}</td></tr>`; }).join('');
+} else { el('tbl-cons').innerHTML = `<tr><td class="muted">${cv.note || 'No consensus estimates available.'}</td></tr>`; }
+el('l-cons').innerHTML = (D.narrative.consensus || []).map(x => `<li>${md(x)}</li>`).join('');
+const mom = cv.momentum || 'n.a.';
+el('tiles-mom').innerHTML = [['EPS momentum', mom.charAt(0).toUpperCase() + mom.slice(1), 'consensus, last 90 days']].concat(
+  (cv.revisions || []).map(r => [`EPS ${r.year}E, 90 days`, fmtP(r.change_90d, 1, true), `${ok(r.up_30d) ? r.up_30d : '–'} up / ${ok(r.down_30d) ? r.down_30d : '–'} down in 30 days`]))
+  .map(t => `<div class="tile"><div class="l">${t[0]}</div><div class="v">${t[1]}</div><div class="s">${t[2]}</div></div>`).join('');
+el('l-rev').innerHTML = (cv.revisions || []).map(r => `<li>Consensus EPS ${r.year}E ${pccy} ${fmtN(r.eps_now, 2)}, from ${fmtN(r.eps_90d_ago, 2)} 90 days ago</li>`).join('');
+el('l-cat').innerHTML = (cv.catalysts || []).length ? cv.catalysts.map(k => `<li><b>${dmy(k.date)}</b> ${k.event}${k.detail ? ' – ' + k.detail : ''}</li>`).join('')
+  : '<li class="muted">No dated events in the Yahoo Finance calendar.</li>';
+
 // ---------------- charts (overview)
 Chart.defaults.font.family = 'Arial'; Chart.defaults.font.size = 11; Chart.defaults.color = '#4a5563';
+Chart.defaults.animation = false;  // draw at once: tab switches, printing and screenshots never catch a half-drawn chart
 const baseOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { boxWidth: 12 } } } };
 const rel = frame(D.relative_performance);
 if (rel.length) {
@@ -243,12 +277,12 @@ el('l-commentary').innerHTML = (D.narrative.financial_commentary || []).map(x =>
 const dcf = D.dcf, w = D.wacc;
 el('tiles-val').innerHTML = [
   ['Enterprise value (DCF)', `${ccy} ${fmtN(dcf.enterprise_value)}m`, `PV FCF ${fmtN(dcf.sum_pv_fcf)} + PV TV ${fmtN(dcf.pv_terminal)}`],
-  ['Equity value', `${ccy} ${fmtN(dcf.equity_value)}m`, `Net debt ${fmtN(dcf.net_debt)}m`],
-  ['Fair value per share', `${pccy} ${fmtN(dcf.value_per_share, 2)}`, `${fmtP(dcf.upside, 0, true)} vs price`],
+  ['Equity value', `${ccy} ${fmtN(dcf.equity_value)}m`, `Net debt ${fmtN(dcf.net_debt)}m` + (L.net_debt_date ? ` at ${dmy(L.net_debt_date)}` : '')],
+  ['Fair value per share', `${pccy} ${fmtN(dcf.value_per_share, 2)}`, `${fmtP(dcf.upside, 0, true)} vs price · valued at ${dmy(D.valuation_date || D.as_of)}`],
   [rec.horizon_months ? '12-month target price' : 'Target price', `${pccy} ${fmtN(rec.target_price, 2)}`, `total return ${fmtP(rec.total_return, 0, true)} incl. DPS ${fmtN(rec.dps, 2)}`],
   ['WACC', fmtP(w.wacc, 2), `Ke ${fmtP(w.cost_of_equity, 1)} · Kd ${fmtP(w.cost_of_debt_after_tax, 1)} after tax`],
   ['Terminal growth', fmtP(dcf.terminal_growth, 2), `TV ${fmtP(dcf.tv_share_of_ev, 0)} of EV`],
-  ['Implied exit EV/EBITDA', fmtX(dcf.implied_exit_ev_ebitda), `Beta ${fmtN(w.beta_used, 2)}`],
+  ['Implied exit EV/EBITDA', fmtX(dcf.implied_exit_ev_ebitda), `Beta ${fmtN(w.beta_used, 2)}` + (w.peer_beta ? ` · peers ${fmtN(w.peer_beta.relevered_adjusted, 2)}` : '')],
 ].map(t => `<div class="tile"><div class="l">${t[0]}</div><div class="v">${t[1]}</div><div class="s">${t[2]}</div></div>`).join('');
 // ---- interactive DCF (same arithmetic as eqr.analyze.forecast / dcf)
 function dcfValue(wacc, g, gShift, mShift) {
@@ -261,9 +295,12 @@ function dcfValue(wacc, g, gShift, mShift) {
   });
   if (wacc <= g) return NaN;
   const mid = D.config.assumptions.mid_year_convention ? 0.5 : 0, n = fcfs.length;
-  let pv = 0; fcfs.forEach((f, i) => pv += f / Math.pow(1 + wacc, i + 1 - mid));
+  // stub period: year 1 counts only the cash flow after the balance-sheet date; everything is discounted to the valuation date
+  const vo = dcf.valuation_offset || 0, bo = Math.min(dcf.balance_offset || 0, vo);
+  let pv = 0; fcfs.forEach((f, i) => { const t = i === 0 ? (mid ? (1 + bo) / 2 : 1) - vo : i + 1 - vo - mid;
+    pv += f * (i === 0 ? 1 - bo : 1) / Math.pow(1 + wacc, t); });
   const tcf = (dcf.terminal_method === 'value_driver' && dcf.ronic) ? nopatLast * (1 + g) * (1 - g / dcf.ronic) : fcfs[n - 1] * (1 + g);
-  return (pv + tcf / (wacc - g) / Math.pow(1 + wacc, n) - c.net_debt - c.minorities) / D.shares_effective;
+  return (pv + tcf / (wacc - g) / Math.pow(1 + wacc, n - vo) - c.net_debt - c.minorities) / D.shares_effective;
 }
 const sl = { wacc: el('s-wacc'), g: el('s-g'), gs: el('s-gs'), ms: el('s-ms') };
 const setRange = (inp, min, max, step, val) => { inp.min = min; inp.max = max; inp.step = step; inp.value = val; };
@@ -325,6 +362,29 @@ new Chart(el('c-ff'), { type: 'bar', data: { labels: ff.map(b => b.label), datas
   options: { ...baseOpts, indexAxis: 'y', layout: { padding: { top: 20 } }, plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `${fmtN(ctx.raw[0], 1)} – ${fmtN(ctx.raw[1], 1)}` } } },
     scales: { x: { min: Math.max(0, Math.floor(ffMin - ffPad)), max: Math.ceil(ffMax + ffPad), title: { display: true, text: `${pccy} per share` }, grid: { color: '#eef1f4' } },
               y: { grid: { display: false } } } }, plugins: [linePlugin] });
+// ---- tornado: one driver at a time
+const td = (D.value_drivers || []).filter(v => ok(v.value_down) && ok(v.value_up));
+if (td.length) {
+  const base = td[0].base;
+  const span = (lo, hi) => [Math.min(lo, hi), Math.max(lo, hi)];
+  const baseLine = { id: 'base', afterDraw(chart) { const {ctx, chartArea: {top, bottom}, scales: {x}} = chart;
+    [[base, NAVY], [c.price, RED]].forEach(([v, col], i) => {  // values are in the caption: base and price are often too close to label
+      const px = x.getPixelForValue(v); if (px < chart.chartArea.left || px > chart.chartArea.right) return;
+      ctx.save(); ctx.strokeStyle = col; ctx.setLineDash(i ? [5, 4] : []); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(px, top); ctx.lineTo(px, bottom); ctx.stroke(); ctx.restore(); }); } };
+  const vals = td.flatMap(v => [v.value_down, v.value_up]).concat([base, c.price]);
+  const tMin = Math.min(...vals), tMax = Math.max(...vals), tPad = (tMax - tMin) * 0.08 || 1;
+  new Chart(el('c-tornado'), { type: 'bar', data: { labels: td.map(v => `${v.driver} ${v.shock}`), datasets: [
+      { label: 'Driver lowered', data: td.map(v => span(base, v.value_down)), backgroundColor: BLUE, grouped: false, barPercentage: .6 },
+      { label: 'Driver raised', data: td.map(v => span(base, v.value_up)), backgroundColor: NAVY, grouped: false, barPercentage: .6 }] },
+    options: { ...baseOpts, indexAxis: 'y',
+      plugins: { ...baseOpts.plugins, tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${fmtN(ctx.datasetIndex ? td[ctx.dataIndex].value_up : td[ctx.dataIndex].value_down, 2)}` } } },
+      scales: { x: { min: Math.floor(tMin - tPad), max: Math.ceil(tMax + tPad), title: { display: true, text: `${pccy} per share (fair value today)` }, grid: { color: '#eef1f4' } },
+                y: { grid: { display: false }, ticks: { font: { size: 10.5 } } } } }, plugins: [baseLine] });
+  const short = s => { s = s.split(' (')[0].split(',')[0]; return s.length > 1 && s[1] === s[1].toLowerCase() ? s[0].toLowerCase() + s.slice(1) : s; };
+  const top2 = td.slice(0, 2).map(v => `${short(v.driver)} (${v.shock}: ${pccy} ${fmtN(Math.min(v.value_down, v.value_up), 1)}–${fmtN(Math.max(v.value_down, v.value_up), 1)})`);
+  el('t-tornado').textContent = `Solid line: base value ${pccy} ${fmtN(base, 2)}; dashed: share price ${pccy} ${fmtN(c.price, 2)}. ` +
+    `The value is most sensitive to ${top2.join(' and ')}. Each bar moves one driver and holds the rest at the base case.`;
+}
 // ---- own multiples through time + cross-check
 const mh = D.multiple_history;
 if (mh && mh.dates && mh.dates.length) {
@@ -356,22 +416,51 @@ el('tbl-impl').innerHTML = `<tr><th>Multiple</th><th>Median</th><th>Implied</th>
   impl.map(v => `<tr><td>${v.label}</td><td>${fmtX(v.multiple)}</td><td>${fmtN(v.per_share, 2)}</td><td>${fmtN(v.low, 1)} – ${fmtN(v.high, 1)}</td><td class="${v.per_share >= c.price ? 'up' : 'down'}">${fmtP(v.per_share / c.price - 1, 0, true)}</td></tr>`).join('');
 
 // ---------------- peers
-const peers = D.comps.table || [];
-const pts = peers.filter(p => ok(p.ev_ebitda) && ok(p.revenue_growth));
-new Chart(el('c-scatter'), { type: 'scatter', data: { datasets: [
-    { label: 'Peers', data: pts.map(p => ({x: p.revenue_growth * 100, y: p.ev_ebitda, name: p.name})), backgroundColor: BLUE, pointRadius: 6 },
-    { label: c.short_name, data: [{x: last.growth * 100, y: D.comps.company.ev_ebitda, name: c.short_name}], backgroundColor: GREEN, pointRadius: 9 }]},
+const peers = D.comps.table || [], cc0 = D.comps.company, reg = D.comps.regression;
+const gx = p => ok(p.growth_reg) ? p.growth_reg : p.revenue_growth;
+const pts = peers.filter(p => ok(p.ev_ebitda) && ok(gx(p)));
+const cx = ok(cc0.growth_fwd) ? cc0.growth_fwd : last.growth;
+const scatterSets = [
+  { label: 'Peers', data: pts.map(p => ({x: gx(p) * 100, y: p.ev_ebitda, name: p.name})), backgroundColor: BLUE, pointRadius: 6 },
+  { label: c.short_name, data: [{x: cx * 100, y: cc0.ev_ebitda, name: c.short_name}], backgroundColor: GREEN, pointRadius: 9 }];
+if (reg && reg.coefficients.growth_reg !== undefined && ok(cx)) {
+  const xs = pts.map(gx).concat([cx]); const x0 = Math.min(...xs) - 0.01, x1 = Math.max(...xs) + 0.01;
+  const mt = reg.coefficients.ebitda_margin !== undefined ? reg.coefficients.ebitda_margin * (reg.target_inputs.ebitda_margin || 0) : 0;
+  const f = x => reg.intercept + reg.coefficients.growth_reg * x + mt;
+  scatterSets.push({ type: 'line', label: `Fit at ${c.short_name}'s margin (R² ${reg.r2.toFixed(2)})`, data: [{x: x0 * 100, y: f(x0), name: 'fit'}, {x: x1 * 100, y: f(x1), name: 'fit'}],
+    borderColor: GREY, borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, fill: false });
+  scatterSets.push({ label: `Fitted for ${c.short_name}`, data: [{x: cx * 100, y: reg.fitted_target, name: 'fitted ' + c.short_name}], backgroundColor: '#fff', borderColor: GREEN, borderWidth: 2, pointRadius: 8 });
+}
+new Chart(el('c-scatter'), { type: 'scatter', data: { datasets: scatterSets },
   options: { ...baseOpts, plugins: { ...baseOpts.plugins, tooltip: { callbacks: { label: ctx => `${ctx.raw.name}: ${ctx.raw.x.toFixed(1)}% growth, ${ctx.raw.y.toFixed(1)}x EV/EBITDA` } } },
-    scales: { x: { title: { display: true, text: 'Revenue growth (last FY, %)' }, grid: { color: '#eef1f4' } }, y: { title: { display: true, text: 'EV/EBITDA (x)' }, grid: { color: '#eef1f4' } } } } });
+    scales: { x: { title: { display: true, text: 'Expected revenue growth (consensus FY1, %; last FY where no consensus)' }, grid: { color: '#eef1f4' } }, y: { title: { display: true, text: 'EV/EBITDA, LTM (x)' }, grid: { color: '#eef1f4' } } } } });
+el('t-scatter').textContent = reg ? reg.note : 'Too few peers with a meaningful multiple and a growth estimate for a regression.';
+el('tiles-reg').innerHTML = (reg ? [
+  ['Fitted EV/EBITDA', fmtX(reg.fitted_target), `actual ${fmtX(reg.actual_target)} · median ${fmtX(reg.peer_median)}`],
+  ['R²', fmtN(reg.r2, 2), `${reg.n} peers · ${reg.regressors.length} regressor${reg.regressors.length > 1 ? 's' : ''}`],
+  ['Explained by fundamentals', fmtP(reg.explained, 0, true), 'fitted vs peer median'],
+  ['Unexplained', fmtP(reg.unexplained, 0, true), 'actual vs fitted'],
+  reg.r2 >= 0.15 && ok(reg.implied_value_per_share) ? ['Regression-implied value', `${pccy} ${fmtN(reg.implied_value_per_share, 2)}`, `${fmtN(reg.low, 0)}–${fmtN(reg.high, 0)} within ±1σ`] : null,
+].filter(Boolean) : [['Regression', 'n.a.', 'too few peers']]).map(t => `<div class="tile"><div class="l">${t[0]}</div><div class="v">${t[1]}</div><div class="s">${t[2]}</div></div>`).join('');
+el('l-mdepth').innerHTML = (D.narrative.multiples_depth || []).map(x => `<li>${md(x)}</li>`).join('');
 const stats = D.comps.stats || {};
-const statKeys = ['ev_sales', 'ev_ebitda', 'ev_ebit', 'pe', 'fwd_pe', 'revenue_growth', 'ebitda_margin'];
-const statLabels = {ev_sales: 'EV/Sales', ev_ebitda: 'EV/EBITDA', ev_ebit: 'EV/EBIT', pe: 'P/E', fwd_pe: 'P/E (fwd)', revenue_growth: 'Rev. growth', ebitda_margin: 'EBITDA margin'};
-const fmtStat = (k, v) => (k === 'revenue_growth' || k === 'ebitda_margin') ? fmtP(v) : fmtX(v);
+const statKeys = ['ev_sales', 'ev_ebitda', 'ev_ebit', 'pe', 'fwd_pe', 'ev_sales_ntm', 'ev_ebitda_ntm', 'peg', 'fcf_yield', 'div_yield', 'growth_fwd', 'ebitda_margin'];
+const statLabels = {ev_sales: 'EV/Sales', ev_ebitda: 'EV/EBITDA', ev_ebit: 'EV/EBIT', pe: 'P/E', fwd_pe: 'P/E NTM', ev_sales_ntm: 'EV/Sales NTM', ev_ebitda_ntm: 'EV/EBITDA NTM*',
+  peg: 'PEG', fcf_yield: 'FCF yield', div_yield: 'Div. yield', growth_fwd: 'Growth FY1', ebitda_margin: 'EBITDA margin'};
+const pctKeys = new Set(['revenue_growth', 'ebitda_margin', 'fcf_yield', 'div_yield', 'growth_fwd', 'eps_growth']);
+const fmtStat = (k, v) => pctKeys.has(k) ? fmtP(v) : (k === 'peg' ? fmtN(v, 2) : fmtX(v));
 el('tbl-stats').innerHTML = `<tr><th>Group / stat</th>${statKeys.map(k => `<th>${statLabels[k]}</th>`).join('')}</tr>` +
   Object.keys(stats).filter(k => k.endsWith('median') || k.endsWith('mean')).map(k => `<tr><td>${k.replace('|', ' – ')}</td>${statKeys.map(m => `<td>${fmtStat(m, stats[k][m])}</td>`).join('')}</tr>`).join('') +
-  `<tr class="bold"><td>${c.short_name}</td>${statKeys.map(m => `<td>${m === 'revenue_growth' ? fmtP(last.growth) : m === 'ebitda_margin' ? fmtP(last.ebitda_margin) : fmtX(D.comps.company[m])}</td>`).join('')}</tr>`;
-el('tbl-peers').innerHTML = `<tr><th>Company</th><th>Group</th><th>Mkt cap (${c.units})</th><th>EV (${c.units})</th><th>Rev. growth</th><th>EBITDA margin</th><th>EV/Sales</th><th>EV/EBITDA</th><th>EV/EBIT</th><th>P/E</th><th>P/E fwd</th></tr>` +
-  peers.map(p => `<tr><td>${p.name} <span class="muted">${p.ticker}</span></td><td>${p.group}</td><td>${fmtN(p.market_cap)}</td><td>${fmtN(p.ev)}</td><td>${fmtP(p.revenue_growth)}</td><td>${fmtP(p.ebitda_margin)}</td><td>${fmtX(p.ev_sales)}</td><td>${fmtX(p.ev_ebitda)}</td><td>${fmtX(p.ev_ebit)}</td><td>${fmtX(p.pe)}</td><td>${fmtX(p.fwd_pe)}</td></tr>`).join('');
+  `<tr class="bold"><td>${c.short_name}</td>${statKeys.map(m => `<td>${fmtStat(m, cc0[m])}</td>`).join('')}</tr>`;
+el('tbl-peers').innerHTML = `<tr><th>Company</th><th>Group</th><th>Basis</th><th>Mkt cap (${c.units})</th><th>EV (${c.units})</th><th>Rev. growth</th><th>EBITDA margin</th><th>EV/Sales</th><th>EV/EBITDA</th><th>EV/EBIT</th><th>P/E</th><th>P/E NTM</th></tr>` +
+  peers.map(p => `<tr><td>${p.name} <span class="muted">${p.ticker}</span></td><td>${p.group}</td><td class="muted">${p.basis || ''}</td><td>${fmtN(p.market_cap)}</td><td>${fmtN(p.ev)}</td><td>${fmtP(p.revenue_growth)}</td><td>${fmtP(p.ebitda_margin)}</td><td>${fmtX(p.ev_sales)}</td><td>${fmtX(p.ev_ebitda)}</td><td>${fmtX(p.ev_ebit)}</td><td>${fmtX(p.pe)}</td><td>${fmtX(p.fwd_pe)}</td></tr>`).join('') +
+  `<tr class="bold"><td>${c.short_name}</td><td>Target</td><td class="muted">${cc0.basis || ''}</td><td>${fmtN(cc0.market_cap)}</td><td>${fmtN(cc0.ev)}</td><td>${fmtP(cc0.revenue_growth)}</td><td>${fmtP(cc0.ebitda_margin)}</td><td>${fmtX(cc0.ev_sales)}</td><td>${fmtX(cc0.ev_ebitda)}</td><td>${fmtX(cc0.ev_ebit)}</td><td>${fmtX(cc0.pe)}</td><td>${fmtX(cc0.fwd_pe)}</td></tr>`;
+const fwdRow = (name, p, cls) => `<tr class="${cls || ''}"><td>${name}</td><td>${fmtX(p.ev_sales_ntm)}</td><td>${fmtX(p.ev_ebitda_ntm)}</td><td>${fmtX(p.pe_fy0)}</td><td>${fmtX(p.pe_fy1)}</td><td>${fmtX(p.fwd_pe)}</td><td>${fmtP(p.eps_growth, 0, true)}</td><td>${fmtN(p.peg, 2)}</td><td>${fmtP(p.fcf_yield)}</td><td>${fmtP(p.div_yield)}</td><td>${ok(p.n_analysts) ? p.n_analysts : '–'}</td></tr>`;
+el('tbl-fwdpeers').innerHTML = `<tr><th>Company</th><th>EV/Sales NTM</th><th>EV/EBITDA NTM*</th><th>P/E FY0</th><th>P/E FY1</th><th>P/E NTM</th><th>EPS growth</th><th>PEG</th><th>FCF yield</th><th>Div. yield</th><th>Analysts</th></tr>` +
+  peers.map(p => fwdRow(`${p.name} <span class="muted">${p.ticker}</span>`, p)).join('') +
+  (stats['All|median'] ? fwdRow('Peer median', stats['All|median'], 'bold') : '') + fwdRow(c.short_name, cc0, 'bold');
+el('t-fwdnote').textContent = `* NTM revenue at the LTM EBITDA margin – Yahoo Finance carries no EBITDA consensus. FY0 = fiscal year in progress; ${cc0.forward_basis || ''}. ` +
+  'EV in each company\'s reporting currency (market cap converted from the listing currency) with the latest net debt; FCF yield is levered, after lease payments.';
 
 // ---------------- assumptions
 const dr = D.drivers;

@@ -17,7 +17,7 @@ from openpyxl import load_workbook
 
 import eqr.pipeline as pl
 from eqr.config import CompanyConfig, PeerConfig
-from eqr.retrieve import DiskCache
+from eqr.retrieve import DiskCache, Extras
 from tests.conftest import make_snapshot
 
 # What the synthetic case is worth. Every figure traces to a statement line in conftest.make_snapshot.
@@ -44,8 +44,12 @@ def case(monkeypatch):
     monkeypatch.setattr(pl, "fetch_snapshot", lambda symbol, cache, **kw: snapshots[symbol])
     monkeypatch.setattr(pl, "fetch_prices", lambda symbol, cache, **kw: company.prices)
     monkeypatch.setattr(pl, "fetch_fx", lambda a, b, cache=None: 1.0)
+    monkeypatch.setattr(pl, "fetch_extras", lambda symbol, cache, **kw: Extras(ticker=symbol))
     cfg = CompanyConfig(ticker="TEST.OL", name="Test ASA", index="^TEST", units_label="NOKm")
     cfg.peers = [PeerConfig("P1.OL", "Peer One", "Nordic"), PeerConfig("P2.OL", "Peer Two", "Nordic")]
+    # Valued at the fiscal year-end: a date-free, textbook DCF, so the pinned numbers never drift with the calendar.
+    # The stub period (valuation date after the year-end) is pinned separately in test_valuation_date.py.
+    cfg.assumptions.valuation_date = "2025-12-31"
     return pl.run_analysis(cfg, DiskCache(enabled=False), progress=lambda m: None)
 
 
