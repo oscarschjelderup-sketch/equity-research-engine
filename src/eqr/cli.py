@@ -35,23 +35,26 @@ def run(
     deck: bool = typer.Option(True, help="Build the PowerPoint deck."),
     excel: bool = typer.Option(True, help="Build the Excel model."),
     dashboard: bool = typer.Option(True, help="Build the HTML dashboard."),
+    note: bool = typer.Option(True, help="Build the one-page research note (HTML; PDF with --pdf)."),
     render: bool = typer.Option(False, "--render", help="Also export deck slides to PNG (needs PowerPoint or LibreOffice)."),
-    pdf: bool = typer.Option(False, "--pdf", help="Also save the deck as PDF (needs PowerPoint or LibreOffice)."),
+    pdf: bool = typer.Option(False, "--pdf", help="Also save the deck (PowerPoint or LibreOffice) and the note (Edge or Chrome) as PDF."),
     template: str | None = typer.Option(None, "--template", help="Optional .pptx template to build the deck on (e.g. a firm template)."),
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the on-disk data cache."),
     cache_ttl: float = typer.Option(24.0, "--cache-ttl", help="Cache lifetime in hours."),
+    log_coverage: bool = typer.Option(True, help="Append this run's rating and target to the coverage log (the site's track record)."),
+    coverage_log: Path = typer.Option(Path("coverage/history.csv"), "--coverage-log", help="Where the coverage log lives."),
 ):
     """Run the full pipeline for one company."""
     from .pipeline import run_case
 
-    outputs = ["json"] + [n for n, flag in (("deck", deck), ("excel", excel), ("dashboard", dashboard)) if flag]
+    outputs = ["json"] + [n for n, flag in (("deck", deck), ("excel", excel), ("dashboard", dashboard), ("note", note)) if flag]
     from .errors import UnsupportedCompanyError
 
     try:
         with console.status("[bold]Working...") as status:
             paths = run_case(source, out, narrative=narrative, outputs=tuple(outputs), cache_ttl_hours=cache_ttl,
                              no_cache=no_cache, template=template, model=model,
-                             progress=lambda m: status.update(f"[bold]{m}"))
+                             progress=lambda m: status.update(f"[bold]{m}"), coverage_log=coverage_log if log_coverage else None)
     except UnsupportedCompanyError as exc:
         console.print(f"[yellow]Not supported:[/yellow] {exc}")
         raise typer.Exit(2) from None
@@ -65,6 +68,27 @@ def run(
         from .create.render import export_pdf
 
         console.print(f"Saved {export_pdf(paths['deck'])}")
+    if pdf and "note" in paths:
+        from .create.render import html_to_pdf
+
+        try:
+            console.print(f"Saved {html_to_pdf(paths['note'])}")
+        except RuntimeError as exc:
+            console.print(f"[yellow]Note PDF skipped:[/yellow] {exc}")
+
+
+@app.command()
+def site(
+    cases: Path = typer.Option(Path("examples"), "--cases", help="Folder with one sub-folder per ticker (analysis.json and the deliverables)."),
+    out: Path = typer.Option(Path("site"), "--out", "-o", help="Where to write the static site."),
+    coverage: Path = typer.Option(Path("coverage/history.csv"), "--coverage", help="The coverage log for the track record."),
+):
+    """Build the static coverage site (what GitHub Pages publishes) from the generated cases. Needs no network."""
+    from .create.site import build_site
+
+    path = build_site(cases, out, coverage)
+    n = sum(1 for p in path.glob("cases/*/analysis.json"))
+    console.print(f"Site with {n} cases written to {path / 'index.html'}")
 
 
 @app.command()

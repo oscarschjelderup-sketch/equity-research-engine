@@ -3,7 +3,8 @@
 [![CI](https://github.com/oscarschjelderup-sketch/equity-research-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/oscarschjelderup-sketch/equity-research-engine/actions/workflows/ci.yml)
 
 **One command turns a ticker into a sell-side style investment case: a PowerPoint deck with appendix, an Excel
-valuation model with live formulas and integrity checks, an interactive dashboard and a JSON audit trail.**
+valuation model with live formulas and integrity checks, an interactive dashboard, a one-page research note and a JSON
+audit trail.**
 
 ```bash
 eqr run SATS.OL --render --pdf
@@ -21,6 +22,8 @@ where the deck format below was the required template.
 | ![Company overview](docs/img/sats_slide_03.png) | ![Market overview](docs/img/sats_slide_04.png) |
 | ![Financials](docs/img/sats_slide_05.png) | ![Scenario analysis](docs/img/sats_slide_08.png) |
 | ![Cost of capital and DCF build-up](docs/img/sats_slide_07.png) | ![Valuation through time and cross-check](docs/img/sats_slide_10.png) |
+| ![Estimates vs consensus and value drivers](docs/img/sats_slide_11.png) | ![Multiples in depth](docs/img/sats_slide_12.png) |
+| ![One-page research note](docs/img/sats_note.png) | ![Public coverage site](docs/img/site.png) |
 | ![Dashboard – overview](docs/img/sats_dashboard.png) | ![Dashboard – interactive valuation](docs/img/sats_dashboard_valuation.png) |
 
 ## What it does
@@ -39,6 +42,10 @@ flowchart LR
         D --> RV[Reverse DCF:<br/>what the price implies]
         H --> P[Peer multiples +<br/>implied values]
         H --> B[Own multiples<br/>through time]
+        Q[Quarterly LTM ·<br/>latest net debt] --> D
+        Q --> P
+        FC --> CS[Our estimates vs<br/>consensus · revisions]
+        FC --> T[Value drivers<br/>tornado]
         W[CAPM WACC<br/>beta · size premium] --> D
         D --> R[Football field ·<br/>12-month target · rating]
         S --> R
@@ -51,6 +58,7 @@ flowchart LR
         N --> DK[PowerPoint deck<br/>+ appendix]
         N --> XL[Excel model<br/>formulas + checks]
         N --> DB[HTML dashboard<br/>interactive DCF]
+        N --> NT[One-page<br/>research note]
         N --> JS[analysis.json]
     end
 ```
@@ -63,11 +71,14 @@ flowchart LR
    with a 7×7 sensitivity grid, **bear / base / bull scenarios** and a **reverse DCF** (the WACC, growth and margin the
    share price implies), computes peer multiples on a consistent basis and the company's **own multiples through time**,
    and turns it all into a football field, a **12-month target price** and a BUY/HOLD/SELL rating on expected total
-   return – with a **cross-check** that says how far the DCF, the peers and the consensus agree.
+   return – with a **cross-check** that says how far the DCF, the peers and the consensus agree. The DCF is valued at
+   **today's date** on the **latest quarterly balance sheet**, multiples are **last twelve months**, and our estimates are
+   set against **consensus and its revision trend**.
 3. **Create** – writes the four fixed case slides (Company overview, Market overview, Financials and estimates,
-   Valuation and recommendation) plus cover, team slide and a four-slide appendix in a Nordic sell-side layout; an
+   Valuation and recommendation) plus cover, team slide and a six-slide appendix in a Nordic sell-side layout; an
    Excel model in which every forecast, scenario and target-price cell is a formula, guarded by an integrity-check
-   sheet; and a self-contained dashboard with sliders that recompute the DCF in the browser.
+   sheet; a self-contained dashboard with sliders that recompute the DCF in the browser; and the front page of a
+   research note as HTML and PDF.
 
 Every number in the deck can be traced to a statement line or a YAML assumption — see [docs/methodology.md](docs/methodology.md).
 
@@ -77,10 +88,11 @@ Every number in the deck can be traced to a statement line or a YAML assumption 
 git clone https://github.com/oscarschjelderup-sketch/equity-research-engine.git && cd equity-research-engine
 uv sync --extra ai --extra dev      # exact, locked environment (uv.lock); or: pip install -e ".[ai,dev]"
 
-eqr run SATS.OL --render --pdf      # deck + Excel + dashboard + JSON, slides exported to PNG, deck to PDF
+eqr run SATS.OL --render --pdf      # deck, Excel, dashboard, note and JSON; slides to PNG, deck and note to PDF
 eqr analyze SATS.OL                 # valuation summary in the terminal, no files
 eqr screen SATS.OL KID.OL BOUV.OL   # watch-list: rating, target price, implied WACC, agreement (+ CSV)
 eqr init NHY.OL                     # commented starter config for a new case (index chosen from the ticker suffix)
+eqr site                            # the public coverage site (examples/ + the coverage log) – what GitHub Pages publishes
 eqr run NHY.OL --narrative claude   # let Claude write the qualitative text (needs ANTHROPIC_API_KEY)
 ```
 
@@ -88,10 +100,12 @@ Outputs land in `output/<TICKER>/`:
 
 | File | Content |
 |---|---|
-| `<TICKER>_deck.pptx` / `.pdf` | Cover, team, four case slides and appendix (DCF build-up, scenarios, peer table, valuation through time); native tables, editable |
+| `<TICKER>_deck.pptx` / `.pdf` | Cover, team, four case slides and appendix (DCF build-up, scenarios, peer table, valuation through time, estimates vs consensus and value drivers); native tables, editable |
+| `<TICKER>_note.html` / `.pdf` | One-page research note: rating box, investment case, estimates vs consensus, key data, catalysts, risks, key figures with multiples by year |
 | `<TICKER>_model.xlsx` | Inputs → Historicals → Forecast → WACC → DCF → Scenarios → Peers → Football field → Checks, all linked by formulas |
-| `<TICKER>_dashboard.html` | Tabs for overview, financials, valuation (interactive DCF, scenarios, reverse DCF, heat-mapped sensitivity, own multiples, cross-check), peers, assumptions |
+| `<TICKER>_dashboard.html` | Tabs for overview (incl. consensus, momentum, catalysts), financials, valuation (interactive DCF, scenarios, reverse DCF, heat-mapped sensitivity, own multiples, cross-check, value drivers), peers, assumptions |
 | `analysis.json` | Every input, intermediate and output – the audit trail |
+| `coverage/history.csv` | The coverage log: every rating and target the engine has published, by date (the site's track record) |
 | `charts/`, `slides/` | Chart PNGs and rendered slides (`--render` needs PowerPoint or LibreOffice) |
 
 A ticker with no config runs on defaults (benchmark index from the ticker suffix, no peers – the deck then shows the
@@ -164,6 +178,48 @@ its cause. What came out of it:
 
 Every remaining extreme output carries at least one warning. Knowing where a model stops working is part of the model.
 
+## Reviewed the way a senior analyst would
+
+A portfolio manager's first questions are rarely about the formula. They are *as of when?*, *on which numbers?*, *where
+are you different from the street?* and *what is the value really resting on?*. Version 0.4 answers them:
+
+| The question | Before | Now |
+|---|---|---|
+| As of when is the value? | DCF discounted to the last year-end: in September a nine-month-old value, and a "12-month" target that was really three | Valued **at today's date** with a stub period: year 1 counts only the cash flow after the latest balance sheet; SATS NOK 43.50 → 44.66 on the same data |
+| Which net debt? | Last annual report | **Latest quarterly balance sheet** (SATS: June 2026) |
+| Which earnings for the multiples? | Last fiscal year for the target, but TTM P/E for peers | **Last twelve months** for everyone, basis reported per company; P/E on trailing EPS throughout |
+| Where do we differ from consensus? | Not shown | **Estimates vs consensus** with range and analysts: SATS 2026E EPS 13% below the street |
+| Which way are estimates moving? | Not shown | **90-day revision trend** and momentum; a BUY against falling estimates (Mowi: 2027E EPS −16% in 90 days) is called out |
+| What is the value resting on? | WACC × growth grid only | **Tornado**: margin, growth, WACC, terminal growth, capex, working capital, tax, one at a time |
+| Is the beta any good? | One noisy regression | **Bottom-up beta** from unlevered peer betas as a cross-check, or as the beta (`beta_method: peers`) |
+| What does the PM actually read? | A ten-slide deck | A **one-page note** with the key figures table and multiples by year |
+| Is year 1 still a forecast? | Margin path started from last year's annual margin, whatever the reported quarters said | **Nowcast**: year 1 = year-to-date actuals + last year's remaining quarters at consensus growth and the year-to-date margin change; refused when the quarters look distorted |
+
+## Multiples in depth
+
+Multiples are where most sell-side arguments are actually won, so version 0.5 treats them with the same care as the DCF:
+
+* **Same currency, same period.** Every peer's market cap is converted from its listing currency to its reporting currency before it
+  meets the statements (Bakkafrost: NOK share price, DKK accounts – a third off otherwise), over last-twelve-month figures.
+* **Calendarised forward multiples.** Consensus revenue and EPS are blended to the *next twelve months* on each company's own fiscal
+  year (Clas Ohlson ends in April), giving NTM EV/Sales, NTM P/E, P/E on FY0 and FY1, consensus EPS growth and PEG; NTM EV/EBITDA is
+  a labelled proxy (NTM revenue at the LTM margin – Yahoo has no EBITDA consensus). Levered FCF yield and dividend yield sit beside them.
+* **Right currency.** Yahoo quotes some companies' estimates in the reporting currency and others' in the listing currency (Yara: NOK
+  on USD accounts); the year-ago revenue it quotes reveals which, and every estimate is converted before it meets a share price.
+* **What sets the multiples.** A regression of peer EV/EBITDA on expected growth and margin splits the target's gap to the median into
+  the part the fundamentals explain and the part they do not. It is a valuation anchor only when it explains enough (R² ≥ 0.15);
+  for SATS's peers it explains 6%, and the slide says so rather than pretending the median is a fair multiple.
+
+All of it is on appendix slide 4.6, the dashboard's peers tab, the Peers sheet of the Excel model (coefficients as inputs, fitted
+value live) and in `analysis.json`.
+
+## Public coverage site
+
+`eqr site` builds a static coverage page from the generated cases and the coverage log, and `.github/workflows/pages.yml` publishes it
+to GitHub Pages on every push (enable once: *Settings → Pages → Source: GitHub Actions*). It lists every case with its rating, target,
+multiples and agreement of anchors, links the note, dashboard, deck and model, and keeps a **track record**: first call, price then,
+latest price and the return since, with the full log underneath so the calls can be checked – including the wrong ones.
+
 ## Optional oil sensitivity
 
 Oslo Børs is an oil market, so "commodity exposure" turns up in every risk section and almost never with a number behind
@@ -207,17 +263,22 @@ src/eqr/
   pipeline.py          retrieve → analyze → create orchestration
   errors.py            unsupported sectors, industry cautions
   retrieve/            yahoo.py (yfinance), files.py (CSV/XLSX history), cache.py
-  analyze/             historicals.py (lease adjustment), forecast.py, wacc.py, dcf.py (terminal value, reverse-DCF solvers),
-                       scenarios.py, comps.py, history_multiples.py (own multiples through time), crosscheck.py,
-                       recommendation.py (12-month target, rating)
+  analyze/             historicals.py (lease adjustment), ltm.py (last twelve months, latest balance sheet), forecast.py,
+                       multiples.py (calendarised consensus, the multiples regression),
+                       wacc.py (incl. bottom-up beta), dcf.py (valuation date, terminal value, reverse-DCF solvers),
+                       scenarios.py (incl. value drivers), comps.py, consensus.py (estimates vs street, revisions, catalysts),
+                       history_multiples.py, crosscheck.py, recommendation.py (12-month target, rating)
   narrative/           rules.py (deterministic text), claude.py (optional AI text)
-  create/              deck.py (python-pptx), excel.py (openpyxl), dashboard.py (Chart.js), charts.py, style.py, render.py
+  create/              deck.py (python-pptx), excel.py (openpyxl), dashboard.py (Chart.js), note.py (research note), site.py (coverage
+                       site), charts.py, style.py, render.py (slides and PDFs)
+  coverage.py          the coverage log (every rating and target by date)
 configs/               case configs (SATS.OL, KID.OL, BOUV.OL, MOWI.OL)
+coverage/              history.csv – the coverage log
 oil/                   oil-sensitivity factsheets from the companion study (optional risk context)
 examples/              generated outputs for the bundled cases
 tests/                 offline tests: synthetic Yahoo-like snapshot, mocked Claude client, golden regression tests
 uv.lock                locked environment
-.github/workflows/     CI: lint and tests on Python 3.11-3.13
+.github/workflows/     CI: lint and tests on Python 3.11-3.13; Pages: builds and publishes the coverage site
 docs/methodology.md    every formula and assumption, in order
 docs/walkthrough.md    five-minute guided tour
 CHANGELOG.md           what changed between versions
@@ -226,9 +287,11 @@ CHANGELOG.md           what changed between versions
 ## Tests
 
 ```bash
-pytest -q        # 43 offline tests: DCF and terminal-value maths, reverse DCF, scenarios, target-price roll-forward,
-                 # lease adjustment, forecast fade, tax and capex drivers, comps, cross-check, own-multiple history,
-                 # sector guard, recommendation, config, rule-based and Claude narrative, and four golden tests
+pytest -q        # 89 offline tests: DCF and terminal-value maths, valuation date and stub period, LTM and latest net
+                 # debt, reverse DCF, scenarios, value drivers, target-price roll-forward, lease adjustment, forecast fade,
+                 # tax and capex drivers, comps, bottom-up beta, consensus and revisions, cross-check, own-multiple
+                 # history, nowcast, calendarised consensus and its currency, the multiples regression, coverage log and site, sector guard,
+                 # research note, config, rule-based and Claude narrative, and four golden tests
 ruff check .     # lint
 ```
 
@@ -255,7 +318,8 @@ A GitHub Actions workflow runs lint and the test suite on Python 3.11, 3.12 and 
 ## Roadmap
 
 * Native (editable) PowerPoint charts instead of images
-* LTM and forward consensus multiples for peers via a second data provider
+* True forward EV/EBITDA for peers via a second data provider (Yahoo has forward EPS and revenue only; today's is a proxy)
+* An estimate-change note between runs ("TP raised from 46.50 to 47.50; 2026E EPS +3%") on top of the coverage log
 * A return-on-equity / dividend-discount model for banks and insurers
 * Segment-level revenue builds from analyst files
 

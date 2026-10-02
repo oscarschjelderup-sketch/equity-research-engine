@@ -48,6 +48,15 @@ def make_snapshot(ticker="TEST.OL", *, years=(2023, 2024, 2025), revenue=(1000.0
     return Snapshot(ticker=ticker, info=info, income=income, balance=balance, cashflow=cashflow, prices=prices)
 
 
+@pytest.fixture(autouse=True)
+def _offline_extras(monkeypatch):
+    """The quarterly balance sheet, calendar and estimate revisions come from a second Yahoo call: keep every test offline."""
+    import eqr.pipeline as pl
+    from eqr.retrieve import Extras
+
+    monkeypatch.setattr(pl, "fetch_extras", lambda symbol, cache=None, **kw: Extras(ticker=symbol))
+
+
 @pytest.fixture
 def snapshot() -> Snapshot:
     return make_snapshot()

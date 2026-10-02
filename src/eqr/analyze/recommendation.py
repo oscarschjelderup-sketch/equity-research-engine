@@ -18,6 +18,8 @@ from ..config import CompanyConfig
 from .comps import CompsResult
 from .dcf import DcfResult
 
+MIN_REGRESSION_R2 = 0.15  # below this the peers' multiples are not set by growth and margin, so the fit is not a valuation anchor
+
 
 @dataclass
 class FootballFieldBar:
@@ -62,13 +64,18 @@ def football_field(snapshot_info: dict, dcf: DcfResult, comps: CompsResult, pric
             bars.append(FootballFieldBar("DCF (WACC ±0.5%, g ±0.25%)", float(inner.min()), float(inner.max())))
     if scenario_range is not None and all(np.isfinite(scenario_range)) and scenario_range[1] > 0:
         bars.append(FootballFieldBar("DCF scenarios (bear–bull)", max(float(scenario_range[0]), 0.0), float(scenario_range[1])))
-    for key in ("ev_ebitda", "ev_ebit", "pe", "fwd_pe"):
+    for key in ("ev_ebitda", "ev_ebit", "pe", "fwd_pe", "ev_sales_ntm"):
         iv = comps.implied.get(key)
         if iv is None:
             continue
         lo_v, hi_v = sorted([iv.low, iv.high])
         if np.isfinite(lo_v) and np.isfinite(hi_v) and hi_v > 0:
             bars.append(FootballFieldBar(f"{iv.label} (peer 25th–75th pct)", max(lo_v, 0.0), hi_v))
+    reg = getattr(comps, "regression", None)
+    # a regression that explains little of the dispersion is reported on the multiples slide, not used as an anchor
+    if reg is not None and reg.r2 >= MIN_REGRESSION_R2 and reg.low is not None and reg.high is not None and reg.high > 0:
+        bars.append(FootballFieldBar("EV/EBITDA regression (growth, margin ±1σ)", max(float(reg.low), 0.0), float(reg.high),
+                                     note=f"fitted {reg.fitted_target:.1f}x, R² {reg.r2:.2f}"))
     return bars
 
 

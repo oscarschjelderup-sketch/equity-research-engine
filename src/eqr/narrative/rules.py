@@ -18,8 +18,105 @@ NARRATIVE_KEYS = [
     "cover_tagline", "company_subtitle", "company_headline", "highlights", "management_note",
     "market_subtitle", "market_headline", "opportunities", "disruption", "threats",
     "financials_subtitle", "financial_commentary", "valuation_subtitle", "valuation_headline", "thesis", "multiples_commentary",
-    "market_implied", "scenario_commentary", "risks",
+    "market_implied", "scenario_commentary", "risks", "consensus", "catalysts", "multiples_depth",
 ]
+
+
+def _multiples_depth(r, name: str, pccy: str) -> list[str]:
+    """Forward multiples, the regression and quality metrics against the peer group – pure arithmetic, locked for Claude."""
+    c, stats, reg = r.comps.company, r.comps.stats, r.comps.regression
+    if r.comps.table.empty:
+        return []
+    med = stats.loc["All|median"] if "All|median" in stats.index else None
+
+    def m(key):
+        v = med[key] if (med is not None and key in med.index) else None
+        return float(v) if _ok(v) else None
+
+    out = []
+    if _ok(c.get("fwd_pe")) or _ok(c.get("ev_sales_ntm")):
+        parts = []
+        if _ok(c.get("fwd_pe")):
+            parts.append(f"{fmt_mult(c['fwd_pe'])} P/E" + (f" (peers {fmt_mult(m('fwd_pe'))})" if m("fwd_pe") else ""))
+        if _ok(c.get("ev_sales_ntm")):
+            parts.append(f"{fmt_mult(c['ev_sales_ntm'])} EV/Sales" + (f" (peers {fmt_mult(m('ev_sales_ntm'))})" if m("ev_sales_ntm") else ""))
+        if _ok(c.get("ev_ebitda_ntm")):
+            parts.append(f"{fmt_mult(c['ev_ebitda_ntm'])} EV/EBITDA at the LTM margin" + (f" (peers {fmt_mult(m('ev_ebitda_ntm'))})" if m("ev_ebitda_ntm") else ""))
+        peg = f"; PEG {fmt_num(c['peg'], 2)} vs {fmt_num(m('peg'), 2)}" if (_ok(c.get("peg")) and m("peg")) else ""
+        out.append(f"**On next-twelve-month consensus** {name} trades at " + ", ".join(parts) + peg)
+    if reg is not None:
+        strength = ("weak: multiples in this group are set by something the regression does not see – leverage, geography, liquidity or the cycle"
+                    if reg.r2 < 0.15 else ("moderate" if reg.r2 < 0.5 else "strong"))
+        out.append(f"**Growth and margin explain {fmt_pct(reg.r2, 0)} of the dispersion in peer EV/EBITDA** ({reg.n} peers): fundamentals justify "
+                   f"{fmt_mult(reg.fitted_target)} against the {fmt_mult(reg.peer_median)} median ({fmt_pct(reg.explained, 0, sign=True)}); "
+                   f"the actual {fmt_mult(reg.actual_target)} leaves {fmt_pct(reg.unexplained, 0, sign=True)} unexplained. Evidence {strength}")
+        if reg.r2 >= 0.15 and reg.implied_value_per_share:
+            out.append(f"**Regression-implied value {pccy} {fmt_num(reg.implied_value_per_share, 2)}** per share "
+                       f"({pccy} {fmt_num(reg.low, 0)}–{fmt_num(reg.high, 0)} within one residual standard deviation)")
+    q = []
+    if _ok(c.get("fcf_yield")):
+        q.append(f"{fmt_pct(c['fcf_yield'])} levered FCF yield" + (f" vs {fmt_pct(m('fcf_yield'))} for peers" if m("fcf_yield") is not None else ""))
+    if _ok(c.get("div_yield")):
+        q.append(f"{fmt_pct(c['div_yield'])} dividend yield" + (f" vs {fmt_pct(m('div_yield'))}" if m("div_yield") is not None else ""))
+    if q:
+        out.append("**Cash and payout:** " + "; ".join(q))
+    if _ok(c.get("eps_growth")) and m("eps_growth") is not None:
+        out.append(f"**Consensus EPS growth FY1:** {fmt_pct(c['eps_growth'], 0, sign=True)} for {name} vs {fmt_pct(m('eps_growth'), 0, sign=True)} "
+                   f"for the peer median – the growth the forward multiple is buying")
+    return out[:5]
+
+
+def _consensus_bullets(r, name: str, pccy: str, ccy: str) -> list[str]:
+    """Variant perception, estimate momentum and the tension between the two, from ``r.consensus``."""
+    cv = getattr(r, "consensus", None)
+    if cv is None or not cv.estimates:
+        return [f"**Consensus:** {cv.note}"] if (cv is not None and cv.note) else []
+    out = []
+    eps = [e for e in cv.estimates if e.metric == "EPS" and e.diff is not None]
+    if eps:
+        e0 = eps[0]
+        side = "above" if e0.diff >= 0 else "below"
+        rng = " – outside the range of estimates" if e0.outside_range else ""
+        later = "; " + ", ".join(f"{e.year}E {fmt_pct(e.diff, 0, sign=True)}" for e in eps[1:]) if len(eps) > 1 else ""
+        explicit = r.forecast[r.forecast.index != "TV"]
+        m0 = float(explicit["ebitda_margin"].iloc[0])
+        out.append(f"**EPS {e0.year}E {pccy} {fmt_num(e0.ours, 2)} vs consensus {pccy} {fmt_num(e0.consensus, 2)} ({fmt_pct(e0.diff, 0, sign=True)}):** "
+                   f"we are {side} the {e0.n_analysts or ''} analysts{rng}{later}; our view rests on a {fmt_pct(m0)} {e0.year}E EBITDA margin "
+                   f"and a {fmt_pct(r.drivers.tax_rate, 0)} tax rate")
+    rev = [e for e in cv.estimates if e.metric == "Revenue" and e.diff is not None]
+    if rev:
+        e0 = rev[0]
+        anchored = "consensus" in (r.drivers.growth_anchor or "")
+        out.append(f"**Revenue {e0.year}E {ccy} {fmt_num(e0.ours)}m vs consensus {ccy} {fmt_num(e0.consensus)}m ({fmt_pct(e0.diff, 1, sign=True)})"
+                   + (":** in line by construction – our growth is anchored on consensus, so the differentiated view sits in margins"
+                      if anchored and abs(e0.diff) < 0.02 else ":** our growth view differs from the street"))
+    revs = [x for x in cv.revisions if x.change_90d is not None]
+    if revs:
+        parts = ", ".join(f"{x.year}E {fmt_pct(x.change_90d, 1, sign=True)}" for x in revs)
+        ups = sum(x.up_30d or 0 for x in cv.revisions)
+        downs = sum(x.down_30d or 0 for x in cv.revisions)
+        out.append(f"**Estimate momentum {cv.momentum}:** consensus EPS over the last 90 days {parts}; {ups} upward and {downs} downward "
+                   f"revisions in the last 30 days")
+    rating = r.recommendation.rating
+    if (rating == "BUY" and cv.momentum == "negative") or (rating == "SELL" and cv.momentum == "positive"):
+        direction = "falling" if cv.momentum == "negative" else "rising"
+        out.append(f"**Tension:** our {rating} runs against {direction} consensus estimates – shares rarely re-rate before revisions turn, "
+                   f"so the timing of the case depends on the next reports")
+    elif eps and ((rating == "BUY" and eps[0].diff < -0.05) or (rating == "SELL" and eps[0].diff > 0.05)):
+        out.append(f"**Valuation, not earnings, carries the {rating}:** our {eps[0].year}E EPS is {'below' if eps[0].diff < 0 else 'above'} "
+                   f"consensus, so the case rests on the multiple the market pays, not on an earnings surprise")
+    return out[:4]
+
+
+def _catalyst_bullets(r, pccy: str) -> list[str]:
+    cv = getattr(r, "consensus", None)
+    if cv is None:
+        return []
+    out = []
+    for k in cv.catalysts[:3]:
+        d = pd.Timestamp(k.date).strftime("%d.%m.%Y")
+        out.append(f"**{d} – {k.event}**" + (f": {k.detail}" if k.detail else ""))
+    return out
 
 
 def _ok(v) -> bool:
@@ -132,11 +229,20 @@ def build_rule_narrative(result) -> dict[str, Any]:
         lev = "conservative" if nd_ebitda < 1.5 else ("moderate" if nd_ebitda < 3 else "elevated")
         highlights.append(f"**Balance sheet:** net debt of {ccy} {fmt_num(r.net_debt)}m equals {fmt_mult(nd_ebitda)} EBITDA, a {lev} leverage level")
 
+    nc = getattr(r.drivers, "nowcast", None)
+    if nc:
+        year1 = (f"**{fy1}E is built on the {nc['quarters_reported']} reported quarter{'s' if nc['quarters_reported'] > 1 else ''}:** revenue "
+                 f"{fmt_pct(nc['growth_ytd'], sign=True)} year-to-date at a {fmt_pct(nc['margin_ytd'])} EBITDA margin ({fmt_pct(nc['margin_prior_ytd'])} a year "
+                 f"earlier); the rest of the year at {fmt_pct(nc['growth_remaining'], sign=True)} growth on last year's seasonal margins gives {ccy} "
+                 f"{fmt_num(f_first['revenue'])}m ({fmt_pct(f_first['growth'], sign=True)}) and a {fmt_pct(f_first['ebitda_margin'])} margin; growth then "
+                 f"follows {r.drivers.growth_anchor} and fades to {fmt_pct(r.drivers.terminal_growth)} by {fyN}E")
+    else:
+        year1 = (f"**We forecast {fy1}E revenue of {ccy} {fmt_num(f_first['revenue'])}m ({fmt_pct(f_first['growth'], sign=True)})**, anchored on "
+                 f"{r.drivers.growth_anchor}, fading to {fmt_pct(r.drivers.terminal_growth)} terminal growth by {fyN}E")
     commentary = [
         f"**{name} grew revenue by {fmt_pct(last['growth'])} in {last_year}A** to {ccy} {fmt_num(last['revenue'])}m, "
         f"with {basis} EBITDA of {ccy} {fmt_num(last['ebitda'])}m ({fmt_pct(m_last)} margin)",
-        f"**We forecast {fy1}E revenue of {ccy} {fmt_num(f_first['revenue'])}m ({fmt_pct(f_first['growth'], sign=True)})**, anchored on "
-        f"{r.drivers.growth_anchor}, fading to {fmt_pct(r.drivers.terminal_growth)} terminal growth by {fyN}E",
+        year1,
         f"**EBITDA margin path:** {fmt_pct(f_first['ebitda_margin'])} in {fy1}E to {fmt_pct(f_last['ebitda_margin'])} in {fyN}E; "
         f"D&A {fmt_pct(r.drivers.da_pct)} and capex {fmt_pct(r.drivers.capex_at(0))}"
         + (f" normalising to {fmt_pct(r.drivers.capex_at(99))}" if abs(r.drivers.capex_at(99) - r.drivers.capex_at(0)) > 0.002 else "")
@@ -164,7 +270,9 @@ def build_rule_narrative(result) -> dict[str, Any]:
     else:
         thesis.append(f"**Operating momentum:** {fmt_pct(f_first['growth'])} revenue growth and {fmt_pct(f_first['ebitda_margin'])} EBITDA margin expected in {fy1}E")
     if rec.horizon_months:
-        thesis.append(f"**12-month target price {pccy} {fmt_num(rec.target_price, 2)}:** fair value {pccy} {fmt_num(rec.fair_value, 2)} rolled forward at the "
+        vd = getattr(r, "valuation_date", None)
+        vd_txt = f" (valued at {vd:%d.%m.%Y})" if vd else ""
+        thesis.append(f"**12-month target price {pccy} {fmt_num(rec.target_price, 2)}:** fair value {pccy} {fmt_num(rec.fair_value, 2)}{vd_txt} rolled forward at the "
                       f"{fmt_pct(rec.cost_of_equity)} cost of equity less {pccy} {fmt_num(rec.dps, 2)} dividend; expected total return "
                       f"{fmt_pct(rec.total_return, 0, sign=True)}, rating {rec.rating}")
     else:
@@ -200,7 +308,9 @@ def build_rule_narrative(result) -> dict[str, Any]:
         multiples_commentary.append(f"**{'Trading at a ' + word}:** {fmt_mult(own_ev_ebitda)} EV/EBITDA vs {fmt_mult(med_ev_ebitda)} peer median "
                                     f"({fmt_pct(abs(ev_disc), 0)} {word})")
     if pe_disc is not None:
-        multiples_commentary.append(f"**Earnings multiple:** {fmt_mult(own_pe)} trailing P/E vs {fmt_mult(med_pe)} for peers ({fmt_pct(pe_disc, 0, sign=True)})")
+        fwd_own, fwd_med = r.comps.company.get("fwd_pe"), _median(r.comps.stats, "fwd_pe")
+        fwd_txt = f"; {fmt_mult(fwd_own)} vs {fmt_mult(fwd_med)} on next-twelve-month consensus" if (_ok(fwd_own) and fwd_med) else ""
+        multiples_commentary.append(f"**Earnings multiple:** {fmt_mult(own_pe)} trailing P/E vs {fmt_mult(med_pe)} for peers ({fmt_pct(pe_disc, 0, sign=True)}){fwd_txt}")
     mh = getattr(r, "multiple_history", None)
     if mh is not None and "ev_ebitda" in mh.stats:
         st = mh.stats["ev_ebitda"]
@@ -228,8 +338,20 @@ def build_rule_narrative(result) -> dict[str, Any]:
     risks = []
     if nd_ebitda is not None and nd_ebitda > 2:
         risks.append(f"**Leverage:** net debt of {fmt_mult(nd_ebitda)} EBITDA limits flexibility if margins compress")
-    risks.append(f"**Valuation sensitivity:** a 50bp higher WACC lowers the DCF value to {pccy} "
-                 f"{fmt_num(_sens(r, +1, 0), 2)}; 25bp lower terminal growth to {pccy} {fmt_num(_sens(r, 0, -1), 2)}")
+    tornado = [v for v in (getattr(r, "value_drivers", None) or []) if _ok(v.value_down) and _ok(v.value_up)]
+    if len(tornado) >= 2:
+        t0, t1 = tornado[0], tornado[1]
+
+        def short(driver: str) -> str:  # "EBITDA margin (all years)" -> "EBITDA margin", "Revenue growth" -> "revenue growth"
+            s = driver.split(" (")[0].split(",")[0]
+            return s[0].lower() + s[1:] if len(s) > 1 and s[1].islower() else s
+
+        risks.append(f"**Value drivers:** {short(t0.driver)} {t0.shock} moves fair value to {pccy} {fmt_num(min(t0.value_down, t0.value_up), 1)}–"
+                     f"{fmt_num(max(t0.value_down, t0.value_up), 1)}, {short(t1.driver)} {t1.shock} to {pccy} "
+                     f"{fmt_num(min(t1.value_down, t1.value_up), 1)}–{fmt_num(max(t1.value_down, t1.value_up), 1)} (base {pccy} {fmt_num(t0.base, 2)})")
+    else:
+        risks.append(f"**Valuation sensitivity:** a 50bp higher WACC lowers the DCF value to {pccy} "
+                     f"{fmt_num(_sens(r, +1, 0), 2)}; 25bp lower terminal growth to {pccy} {fmt_num(_sens(r, 0, -1), 2)}")
     risks.append(f"**Execution:** the case assumes {fmt_pct(f_first['growth'])} growth in {fy1}E and margins of {fmt_pct(f_last['ebitda_margin'])} by {fyN}E; "
                  f"a return to the {first_year}–{last_year} average margin of {fmt_pct(h['ebitda_margin'].mean())} would cut fair value")
     oil = getattr(r, "oil", None)
@@ -271,6 +393,9 @@ def build_rule_narrative(result) -> dict[str, Any]:
         "thesis": thesis[:4],
         "multiples_commentary": multiples_commentary[:4],
         "risks": risks[:4],
+        "consensus": _consensus_bullets(r, name, pccy, ccy),
+        "catalysts": _catalyst_bullets(r, pccy),
+        "multiples_depth": _multiples_depth(r, name, pccy),
     }
     # analyst overrides from YAML (same keys)
     for key, value in (cfg.narrative or {}).items():

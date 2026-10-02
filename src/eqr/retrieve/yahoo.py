@@ -134,6 +134,40 @@ def fetch_snapshot(
     return snap
 
 
+@dataclass
+class Extras:
+    """Data that ages quickly and is fetched separately from the statements snapshot.
+
+    ``quarterly_balance`` gives the latest net debt; ``calendar`` the next results and ex-dividend
+    dates; ``eps_trend`` / ``eps_revisions`` how consensus EPS has moved over the last 90 days.
+    """
+
+    ticker: str
+    quarterly_balance: pd.DataFrame | None = None
+    calendar: dict[str, Any] = field(default_factory=dict)
+    eps_trend: pd.DataFrame | None = None
+    eps_revisions: pd.DataFrame | None = None
+    dividends: pd.Series | None = None
+
+
+def fetch_extras(symbol: str, cache: DiskCache | None = None, *, full: bool = True) -> Extras:
+    """Latest quarterly balance sheet, plus (``full``) calendar, estimate revisions and dividends."""
+    cache = cache or DiskCache(enabled=False)
+
+    def produce() -> Extras:
+        t = _ticker(symbol)
+        ex = Extras(ticker=symbol, quarterly_balance=_safe(lambda: t.quarterly_balance_sheet))
+        if full:
+            ex.calendar = _safe(lambda: dict(t.calendar), {}) or {}
+            ex.eps_trend = _safe(lambda: t.eps_trend)
+            ex.eps_revisions = _safe(lambda: t.eps_revisions)
+            div = _safe(lambda: t.dividends)
+            ex.dividends = div if isinstance(div, pd.Series) and len(div) else None
+        return ex
+
+    return cache.get_or(f"extras_{symbol}_{int(full)}", produce)
+
+
 def fetch_prices(symbol: str, cache: DiskCache | None = None, period: str = "5y", interval: str = "1wk") -> pd.DataFrame | None:
     cache = cache or DiskCache(enabled=False)
     key = f"prices_{symbol}_{period}_{interval}"

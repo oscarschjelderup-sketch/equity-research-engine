@@ -239,6 +239,15 @@ def build_history(snap: Snapshot, cfg: CompanyConfig, extra: pd.DataFrame | None
     return h
 
 
+def fiscal_year_end(snap: Snapshot) -> pd.Timestamp | None:
+    """Balance-sheet date of the latest annual statements."""
+    for df in (snap.income, snap.balance):
+        if df is not None and len(df.columns):
+            ts = pd.Timestamp(max(df.columns))
+            return ts.tz_localize(None) if ts.tzinfo else ts
+    return None
+
+
 def last_fy_metrics(snap: Snapshot, treatment: str = "operating", lease_rate: float = 0.045) -> dict[str, float | None]:
     """Latest fiscal-year fundamentals for a peer (native units), on the chosen basis."""
     raw = extract_fields(snap)
@@ -263,6 +272,7 @@ def last_fy_metrics(snap: Snapshot, treatment: str = "operating", lease_rate: fl
     rev = float(last["revenue"])
     return {
         "fiscal_year": int(d.index[-1]),
+        "fy_end": fiscal_year_end(snap),
         "revenue": rev,
         "ebitda": g("ebitda"),
         "ebit": g("ebit"),
@@ -273,6 +283,11 @@ def last_fy_metrics(snap: Snapshot, treatment: str = "operating", lease_rate: fl
         "net_debt": g("net_debt"),
         "net_debt_incl_leases": g("net_debt_incl_leases"),
         "lease_cost": g("lease_cost"),
+        "lease_interest": g("lease_interest"),
+        "lease_principal": g("lease_principal"),
+        "ocf": g("ocf"),
+        "capex": g("capex"),
+        "debt": g("debt_for_wacc"),
         "minority": g("minority") or 0.0,
         "rev_growth": rev_growth,
         "ebitda_margin": (g("ebitda") / rev) if g("ebitda") is not None else None,

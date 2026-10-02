@@ -1,6 +1,7 @@
 """Orchestrates the three phases: retrieve -> analyze -> create."""
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -24,9 +25,17 @@ from .analyze import (
     run_dcf,
     run_scenarios,
 )
+from .analyze.comps import forward_multiples
+from .analyze.consensus import build_consensus_view
+from .analyze.forecast import model_eps
+from .analyze.historicals import fiscal_year_end
+from .analyze.ltm import latest_figures
+from .analyze.multiples import consensus_forward, estimate_currency
+from .analyze.nowcast import nowcast_year
+from .analyze.scenarios import value_drivers
 from .config import CompanyConfig, load_config
 from .errors import check_supported, industry_caution
-from .retrieve import DiskCache, Snapshot, fetch_fx, fetch_prices, fetch_snapshot, load_history_file
+from .retrieve import DiskCache, Snapshot, fetch_extras, fetch_fx, fetch_prices, fetch_snapshot, load_history_file
 
 log = logging.getLogger(__name__)
 Progress = Callable[[str], None]
@@ -91,69 +100,162 @@ def run_analysis(cfg: CompanyConfig, cache: DiskCache | None = None, progress: P
     shares = shares_real * fx  # effective shares: reporting-currency equity / shares -> listing-currency value per share
     market_cap = price * shares
     last = hist.iloc[-1]
-    net_debt = float(last["net_debt"]) if pd.notna(last["net_debt"]) else 0.0
-    minorities = float(last["minority"]) if pd.notna(last.get("minority")) else 0.0
+    a = cfg.assumptions
+
+    # ------------------------------------------------------------ latest figures and valuation date
+    fy_end = fiscal_year_end(snap) or pd.Timestamp(f"{int(hist.index[-1])}-12-31")
+    try:
+        extras = fetch_extras(cfg.ticker, cache)
+    except Exception as exc:  # the case still runs on annual figures
+        extras = None
+        warnings.append(f"Quarterly balance sheet and calendar unavailable ({exc}); using the last annual balance sheet.")
+
+    def fy_value(key: str) -> float | None:
+        v = last.get(key)
+        return float(v) if v is not None and pd.notna(v) else None
+
+    fy = {k: fy_value(k) for k in ("revenue", "ebitda", "ebit", "ebitda_reported", "ebit_reported", "lease_cost", "lease_interest", "net_debt", "minority")}
+    fy["net_debt"] = fy["net_debt"] or 0.0
+    fy["minority"] = fy["minority"] or 0.0
+    latest = latest_figures(fy, fy_end, snap.quarterly_income, extras.quarterly_balance if extras is not None else None,
+                            divisor=cfg.units_divisor, treatment=a.lease_treatment, use_balance=a.latest_balance_sheet)
+    net_debt = float(latest.net_debt if latest.net_debt is not None else fy["net_debt"])
+    minorities = float(latest.minority if latest.minority is not None else fy["minority"])
     ev = market_cap + net_debt + minorities
     total_debt = float(last["debt_for_wacc"]) if pd.notna(last["debt_for_wacc"]) else max(net_debt, 0.0)
+    valuation_date = dt.date.fromisoformat(a.valuation_date) if a.valuation_date else dt.date.today()
+    balance_date = dt.date.fromisoformat(latest.net_debt_date) if latest.net_debt_date else fy_end.date()
+    balance_offset = max((balance_date - fy_end.date()).days / 365.25, 0.0)
+    elapsed = (valuation_date - fy_end.date()).days / 365.25
+    valuation_offset = elapsed if a.stub_period else balance_offset  # no stub: value at the balance-sheet date
+    if valuation_offset > 1.0:
+        warnings.append(f"The last annual accounts ({fy_end.date():%d.%m.%Y}) are more than a year old: the first forecast year is already "
+                        "behind the valuation date. Add the new fiscal year (history_csv) or wait for the annual report.")
+    valuation_offset = min(max(valuation_offset, 0.0), 1.0)
+    balance_offset = min(balance_offset, valuation_offset)
+    timing = {"valuation_offset": valuation_offset, "balance_offset": balance_offset}
 
-    # ------------------------------------------------------------ forecast + WACC + DCF
-    progress("Building forecast, WACC and DCF")
-    drivers = derive_drivers(hist, cfg, snap)
+    # ------------------------------------------------------------ forecast (year 1 nowcast from the reported quarters)
+    progress("Building forecast")
+    company_fwd_est = consensus_forward(snap.revenue_estimate, snap.earnings_estimate, fy_end, valuation_date, float(last["revenue"]) * cfg.units_divisor,
+                                        fx_listing_to_reporting=fx)
+    # Yahoo's estimate table can be in either currency (see multiples.estimate_currency); these factors put it on the model's
+    est_ccy, rev_to_reporting = estimate_currency(snap.revenue_estimate, float(last["revenue"]) * cfg.units_divisor, fx)
+    eps_to_listing = 1.0 if est_ccy == "listing" else 1.0 / fx
+    nowcast = None
+    if a.nowcast:
+        g_cons = (company_fwd_est.revenue_fy0 / cfg.units_divisor / float(last["revenue"]) - 1) if (company_fwd_est and company_fwd_est.revenue_fy0) else None
+        nowcast, why = nowcast_year(fy, fy_end, snap.quarterly_income, consensus_growth_fy0=g_cons, divisor=cfg.units_divisor,
+                                    treatment=a.lease_treatment, growth_floor=a.growth_floor, growth_cap=a.growth_cap)
+        if nowcast is None and "distorted" in why:
+            warnings.append(f"Nowcast refused: {why}.")
+        if nowcast is not None and nowcast.margin_shift_capped:
+            warnings.append(f"The year-to-date EBITDA margin moved {(nowcast.margin_ytd - nowcast.margin_prior_ytd) * 100:+.1f}pp against a year earlier; "
+                            f"the nowcast caps the change at {nowcast.margin_shift * 100:+.1f}pp. Check whether the quarters carry one-offs.")
+    drivers = derive_drivers(hist, cfg, snap, nowcast=nowcast, fx_listing_to_reporting=fx)
     forecast = build_forecast(hist, drivers)
+    nd_fy = float(fy["net_debt"])
+    ebitda_ref = abs(float(last["ebitda"])) if pd.notna(last["ebitda"]) and last["ebitda"] else None
+    if a.latest_balance_sheet and latest.net_debt is not None and ebitda_ref and abs(net_debt - nd_fy) > 0.5 * ebitda_ref:
+        warnings.append(f"Net debt moved from {nd_fy:,.0f} at the year-end to {net_debt:,.0f} at {latest.net_debt_date} (more than half a year's "
+                        "EBITDA): seasonal working capital or a dividend may reverse by the year-end, which the even spread of year-1 cash flow "
+                        "does not capture. Set latest_balance_sheet: false to value on the year-end balance sheet.")
+
+    # ------------------------------------------------------------ peers (before WACC: they feed the bottom-up beta)
+    peer_snaps: dict[str, Snapshot] = {}
+    peer_balances: dict[str, pd.DataFrame | None] = {}
+    fx_rates: dict[str, float] = {snap.currency: 1.0}
+    if cfg.peers:
+        progress(f"Retrieving {len(cfg.peers)} peers")
+    peer_fx_listing: dict[str, float] = {}
+    for peer in cfg.peers:
+        try:
+            ps = fetch_snapshot(peer.ticker, cache, with_estimates=True, price_period="1y")
+        except Exception as exc:
+            warnings.append(f"Peer {peer.ticker} skipped: {exc}")
+            continue
+        peer_snaps[peer.ticker] = ps
+        try:
+            peer_balances[peer.ticker] = fetch_extras(peer.ticker, cache, full=False).quarterly_balance
+        except Exception:
+            peer_balances[peer.ticker] = None
+        ccy = ps.currency
+        if ccy not in fx_rates:
+            fx_rates[ccy] = fetch_fx(ccy, snap.currency, cache)
+        # Yahoo's market cap is in the listing currency; the statements are in the reporting currency
+        listing = "GBP" if ps.price_currency == "GBp" else ps.price_currency
+        peer_fx_listing[peer.ticker] = fetch_fx(listing, ccy, cache) if listing != ccy else 1.0
+        if listing != ccy and peer_fx_listing[peer.ticker] == 1.0:
+            warnings.append(f"Peer {peer.ticker}: FX {listing}/{ccy} unavailable, its enterprise value mixes currencies.")
+    # the target's own forward multiples, calendarised exactly like the peers'
+    ltm_margin = (latest.ebitda / latest.revenue) if (latest.ebitda is not None and latest.revenue) else None
+    company_forward = forward_multiples(company_fwd_est, price_listing=price, ev=ev, mcap=market_cap, ltm_margin=ltm_margin, divisor=cfg.units_divisor)
+    company_forward["revenue_ntm"] = company_fwd_est.revenue_ntm / cfg.units_divisor if (company_fwd_est and company_fwd_est.revenue_ntm) else None
+    forward_eps = company_forward.get("eps_ntm") or _forward_eps(snap, forecast, hist, shares, cfg, fx)
+    fcf_levered = None
+    if pd.notna(last.get("ocf")) and pd.notna(last.get("capex")):
+        fcf_levered = float(last["ocf"] + last["capex"] - (last.get("lease_principal") or 0.0 if a.lease_treatment == "operating" else 0.0))
+    div_rate = _num(snap.info.get("dividendRate"))  # listing currency (pounds, not pence, for London)
+    company_metrics = {"revenue": latest.revenue, "ebitda": latest.ebitda, "ebit": latest.ebit, "eps": _trailing_eps(snap, last, fx),
+                       "growth": float(last["growth"]) if pd.notna(last["growth"]) else None, "fcf": fcf_levered,
+                       "div_yield": (div_rate / price) if (div_rate is not None and price and 0 < div_rate / price < 0.20) else None}
+    comps = build_comps(cfg, snap, peer_snaps, fx_rates, company_metrics=company_metrics, net_debt=net_debt,
+                        minorities=minorities, shares=shares, price=price, forward_eps=forward_eps, peer_balances=peer_balances,
+                        peer_fx_listing=peer_fx_listing, valuation_date=valuation_date, company_forward=company_forward)
+    comps.company["basis"] = latest.basis
+    comps.company["forward_basis"] = (f"NTM = {company_fwd_est.weight_fy0:.0%} of FY to {company_fwd_est.fy0_end[:7]} + the rest of the following year"
+                                      if company_fwd_est else "no consensus")
+    if comps.table.empty and cfg.peers:
+        warnings.append("No peer data could be retrieved; multiples valuation omitted.")
+    peer_betas = comps.table[["ticker", "beta", "debt_to_equity"]].to_dict(orient="records") if not comps.table.empty else []
+
+    # ------------------------------------------------------------ WACC + DCF
+    progress("Building WACC and DCF")
     fx_usd = fetch_fx(snap.currency, "USD", cache)
     wacc = compute_wacc(
         cfg, hist, market_cap=market_cap, total_debt=total_debt, yahoo_beta=snap.info.get("beta"),
         stock_prices=snap.prices["Close"] if snap.prices is not None else None,
         index_prices=index_prices["Close"] if index_prices is not None else None,
-        market_cap_usd=market_cap * cfg.units_divisor * fx_usd,
+        market_cap_usd=market_cap * cfg.units_divisor * fx_usd, peer_betas=peer_betas,
     )
-    a = cfg.assumptions
+    if cfg.wacc.beta_method == "peers" and wacc.peer_beta is None:
+        warnings.append("beta_method is 'peers' but fewer than three peers have a usable beta; the regression / Yahoo beta is used instead.")
     ronic = (float(a.ronic) if a.ronic is not None else wacc.wacc + 0.02) if a.terminal_method == "value_driver" else None
     dcf = run_dcf(
         forecast, wacc=wacc.wacc, terminal_growth=drivers.terminal_growth, net_debt=net_debt, shares=shares,
         minorities=minorities, mid_year=a.mid_year_convention, price=price,
         wacc_step=cfg.recommendation.sensitivity_wacc_step, growth_step=cfg.recommendation.sensitivity_growth_step,
-        terminal_method=a.terminal_method, ronic=ronic,
+        terminal_method=a.terminal_method, ronic=ronic, **timing,
     )
     scenarios, weighted_value = run_scenarios(hist, drivers, cfg, wacc.wacc, net_debt=net_debt, shares=shares,
-                                              minorities=minorities, price=price, ronic=ronic)
+                                              minorities=minorities, price=price, ronic=ronic, **timing)
     reverse = reverse_dcf(hist, drivers, cfg, wacc.wacc, net_debt=net_debt, shares=shares, minorities=minorities,
-                          price=price, ronic=ronic)
-
-    # ------------------------------------------------------------ peers
-    peer_snaps: dict[str, Snapshot] = {}
-    fx_rates: dict[str, float] = {snap.currency: 1.0}
-    if cfg.peers:
-        progress(f"Retrieving {len(cfg.peers)} peers")
-    for peer in cfg.peers:
-        try:
-            ps = fetch_snapshot(peer.ticker, cache, with_estimates=False, price_period="1y")
-        except Exception as exc:
-            warnings.append(f"Peer {peer.ticker} skipped: {exc}")
-            continue
-        peer_snaps[peer.ticker] = ps
-        ccy = ps.currency
-        if ccy not in fx_rates:
-            fx_rates[ccy] = fetch_fx(ccy, snap.currency, cache)
-    forward_eps = _forward_eps(snap, forecast, hist, shares, cfg, fx)
-    company_metrics = {"revenue": float(last["revenue"]), "ebitda": float(last["ebitda"]), "ebit": float(last["ebit"]),
-                       "eps": float(last["eps"]) / fx if pd.notna(last["eps"]) else None}  # EPS in listing currency
-    comps = build_comps(cfg, snap, peer_snaps, fx_rates, company_metrics=company_metrics, net_debt=net_debt,
-                        minorities=minorities, shares=shares, price=price, forward_eps=forward_eps)
-    if comps.table.empty and cfg.peers:
-        warnings.append("No peer data could be retrieved; multiples valuation omitted.")
+                          price=price, ronic=ronic, **timing)
+    tornado = value_drivers(hist, drivers, cfg, wacc.wacc, net_debt=net_debt, shares=shares, minorities=minorities, ronic=ronic, **timing)
 
     # ------------------------------------------------------------ recommendation
     sc_values = [s.value_per_share for s in scenarios if np.isfinite(s.value_per_share)]
     football = football_field(snap.info, dcf, comps, price, (min(sc_values), max(sc_values)) if len(sc_values) > 1 else None)
-    # expected dividend per share over the next 12 months (listing currency): last year's cash dividend
-    div = hist["dividends"].abs().dropna()
-    dps = float(div.iloc[-1]) / shares if (len(div) and shares) else 0.0
+    if comps.regression is not None and comps.regression.r2 < 0.15:
+        warnings.append(f"The peer multiples regression explains little (R² {comps.regression.r2:.2f} across {comps.regression.n} peers): "
+                        "growth and margin do not set EV/EBITDA in this group, so the regression-implied value is weak evidence.")
+    dps, dps_source = _expected_dps(snap, hist, shares, price, cfg)
     rec = recommend(cfg, price, dcf, comps, listing_ccy, cost_of_equity=wacc.cost_of_equity, dps=dps)
     fwd = _forward_multiples(forecast, hist, ev, price, shares, cfg, fx)
 
+    # ------------------------------------------------------------ consensus, revisions, catalysts
+    explicit = forecast[forecast.index != "TV"]
+    consensus = build_consensus_view(
+        revenue_estimate=snap.revenue_estimate, earnings_estimate=snap.earnings_estimate,
+        eps_trend=extras.eps_trend if extras is not None else None, eps_revisions=extras.eps_revisions if extras is not None else None,
+        calendar=extras.calendar if extras is not None else None, last_fy=int(hist.index[-1]), last_fy_revenue=float(last["revenue"]),
+        forecast_years=[int(y) for y in explicit.index], our_revenue={int(y): float(v) for y, v in explicit["revenue"].items()},
+        our_eps={int(y): _model_eps(forecast, hist, shares, cfg, i) for i, y in enumerate(explicit.index)},
+        units_divisor=cfg.units_divisor, eps_to_listing=eps_to_listing, today=valuation_date, revenue_to_reporting=rev_to_reporting,
+    )
+
     # ------------------------------------------------------------ own history and cross-check
-    fy_month = int(pd.Timestamp(snap.income.columns[0]).month) if snap.income is not None and len(snap.income.columns) else 12
+    fy_month = int(fy_end.month)
     mult_hist = build_multiple_history(hist, snap.prices, fx=fx, shares_now=shares, net_debt_now=net_debt, minorities_now=minorities,
                                        fiscal_year_end_month=fy_month, units_divisor=cfg.units_divisor)
     if mult_hist is not None and "ev_ebitda" in mult_hist.implied:
@@ -189,34 +291,50 @@ def run_analysis(cfg: CompanyConfig, cache: DiskCache | None = None, progress: P
         prices=snap.prices, index_prices=index_prices, forward_multiples=fwd, warnings=warnings,
         price_currency=listing_ccy, fx_reporting_per_listing=fx, shares_real=shares_real,
         scenarios=scenarios, scenario_weighted_value=weighted_value, reverse_dcf=reverse,
-        crosscheck=check, multiple_history=mult_hist, oil=oil,
+        crosscheck=check, multiple_history=mult_hist, oil=oil, latest=latest, consensus=consensus, value_drivers=tornado,
+        valuation_date=valuation_date, fiscal_year_end=fy_end.date(), dps_source=dps_source, extras=extras,
     )
     return result
 
 
+def _num(v) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
+
+
+def _trailing_eps(snap: Snapshot, last: pd.Series, fx: float) -> float | None:
+    """Trailing twelve-month EPS in the listing currency: Yahoo's (the basis of every peer's P/E), else the last fiscal year.
+
+    Yahoo quotes ``trailingEps`` in the listing currency – pounds, not pence, for London shares – so no conversion is needed.
+    """
+    teps = _num(snap.info.get("trailingEps"))
+    if teps is not None and teps != 0:
+        return teps
+    return float(last["eps"]) / fx if pd.notna(last["eps"]) else None
+
+
+def _expected_dps(snap: Snapshot, hist: pd.DataFrame, shares: float, price: float, cfg: CompanyConfig) -> tuple[float, str]:
+    """Dividend per share expected over the next twelve months, in the listing currency."""
+    div = hist["dividends"].abs().dropna()
+    last_paid = float(div.iloc[-1]) / shares if (len(div) and shares) else 0.0
+    if cfg.recommendation.dividend_source == "indicated":
+        rate = _num(snap.info.get("dividendRate"))  # listing currency (pounds, not pence, for London)
+        if rate is not None and price and 0 < rate / price < 0.20:
+            return rate, "indicated annual dividend (Yahoo Finance)"
+    return last_paid, f"cash dividend paid in FY{int(hist.index[-1])}"
+
+
 def _forward_eps(snap: Snapshot, forecast: pd.DataFrame, hist: pd.DataFrame, shares: float, cfg: CompanyConfig, fx: float = 1.0) -> float | None:
     """Next-year EPS in the *listing* currency (consensus if available, else the model)."""
-    ee = snap.earnings_estimate
-    if ee is not None and not ee.empty and "avg" in ee.columns:
-        rows = {str(i): r for i, r in ee.iterrows()}
-        for key in ("0y", "+1y"):
-            r = rows.get(key)
-            if r is not None and pd.notna(r.get("avg")) and float(r["avg"]) > 0:
-                v = float(r["avg"])
-                if snap.info.get("currency") == "GBp":
-                    v = v / 100.0
-                return v / fx  # consensus EPS is quoted in the reporting currency
+    # only reached when the calendarised consensus is unavailable (years not matched): the model's own EPS
     return _model_eps(forecast, hist, shares, cfg, 0)
 
 
 def _model_eps(forecast: pd.DataFrame, hist: pd.DataFrame, shares: float, cfg: CompanyConfig, i: int) -> float | None:
-    explicit = forecast[forecast.index != "TV"]
-    if i >= len(explicit) or not shares:
-        return None
-    interest = float(hist["interest_ex_leases"].dropna().iloc[-1]) if hist["interest_ex_leases"].notna().any() else 0.0
-    ebit = float(explicit["ebit"].iloc[i])
-    ni = (ebit - interest) * (1 - float(explicit["tax_rate_used"].iloc[i]))
-    return ni / shares
+    return model_eps(forecast, hist, shares, i)
 
 
 def _forward_multiples(forecast: pd.DataFrame, hist: pd.DataFrame, ev: float, price: float, shares: float, cfg: CompanyConfig,
@@ -241,12 +359,13 @@ def run_case(
     out_dir: str | Path = "output",
     *,
     narrative: str = "rules",
-    outputs: tuple[str, ...] = ("deck", "excel", "dashboard", "json"),
+    outputs: tuple[str, ...] = ("deck", "excel", "dashboard", "note", "json"),
     cache_ttl_hours: float = 24.0,
     no_cache: bool = False,
     template: str | None = None,
     model: str | None = None,
     progress: Progress = log.info,
+    coverage_log: str | Path | None = None,
 ) -> dict[str, Path]:
     cfg = load_config(source)
     if template:
@@ -258,6 +377,10 @@ def run_case(
 
     progress(f"Writing narrative ({narrative})")
     result.narrative, result.narrative_mode = generate_narrative(result, mode=narrative, model=model)
+    if coverage_log:
+        from .coverage import log_coverage
+
+        log_coverage(result, coverage_log)
 
     out = Path(out_dir) / cfg.ticker
     out.mkdir(parents=True, exist_ok=True)
@@ -281,4 +404,9 @@ def run_case(
 
         progress("Building dashboard")
         paths["dashboard"] = build_dashboard(result, out / f"{cfg.ticker}_dashboard.html")
+    if "note" in outputs:
+        from .create.note import build_note
+
+        progress("Writing the research note")
+        paths["note"] = build_note(result, out / f"{cfg.ticker}_note.html", charts_dir=out / "charts")
     return paths

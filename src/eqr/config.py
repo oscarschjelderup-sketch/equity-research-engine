@@ -47,6 +47,7 @@ class Assumptions:
     valuation_date: str | None = None  # ISO date the DCF is valued at; None -> the run date
     stub_period: bool = True  # discount to the valuation date and count year-1 cash flow from the latest balance sheet
     latest_balance_sheet: bool = True  # net debt from the latest quarterly balance sheet instead of the last annual one
+    nowcast: bool = True  # build year-1 revenue growth and margin from the quarters already reported (see analyze/nowcast.py)
     growth_cap: float = 0.20
     growth_floor: float = -0.05
     use_consensus_growth: bool = True
@@ -330,6 +331,7 @@ assumptions:
   valuation_date: null     # null = today; the DCF is discounted to this date (stub period)
   stub_period: true        # count year-1 cash flow only after the latest balance sheet date
   latest_balance_sheet: true   # net debt from the latest quarterly balance sheet
+  nowcast: true            # year-1 growth and margin from the reported quarters (year-to-date + last year's remaining quarters)
 
 wacc:
   risk_free: 0.038

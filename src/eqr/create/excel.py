@@ -87,6 +87,17 @@ def col(i: int) -> str:
     return get_column_letter(i)
 
 
+def _d(value) -> str:
+    """dd.mm.yyyy for a date or ISO string ('' when missing)."""
+    if value is None or value == "":
+        return ""
+    return pd.Timestamp(value).strftime("%d.%m.%Y")
+
+
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:] if text else text
+
+
 def build_excel(result, out_path: str | Path) -> Path:
     r = result
     cfg = r.cfg
@@ -111,6 +122,9 @@ def build_excel(result, out_path: str | Path) -> Path:
     n_f = len(years_f)
     units = r.units_label
 
+    latest = r.latest
+    bs_date = _d(latest.net_debt_date) if latest is not None and latest.net_debt_date else "(last annual report)"
+
     # ===================================================================== Inputs
     ws_in.title(f"{r.name} – model inputs", f"All figures in {units} unless stated. Blue = input, black = formula, green = link.")
     ws_in.widths({"A": 34, "B": 14, "C": 14, "D": 14, "E": 14, "F": 14, "G": 14, "H": 14, "I": 14})
@@ -122,8 +136,8 @@ def build_excel(result, out_path: str | Path) -> Path:
         (f"FX: {r.currency} per {r.price_currency}", r.fx_reporting_per_listing, "0.0000",
          "1.0 when the company reports in its listing currency" if not r.dual_currency else "Spot rate; per-share values are shown in the listing currency"),
         ("Shares outstanding (m)", r.shares_real, NUM1, "Yahoo Finance"),
-        ("Net debt", r.net_debt, NUM, "Latest balance sheet" + (" (ex leases)" if cfg.assumptions.lease_treatment == "operating" else " (incl. leases)")),
-        ("Minority interest", r.minorities, NUM, "Latest balance sheet"),
+        ("Net debt", r.net_debt, NUM, f"Balance sheet {bs_date}" + (" (ex leases)" if cfg.assumptions.lease_treatment == "operating" else " (incl. leases)")),
+        ("Minority interest", r.minorities, NUM, f"Balance sheet {bs_date}"),
         ("Tax rate", r.drivers.tax_rate, PCT, r.drivers.tax_source or "Config"),
         ("Terminal growth", r.drivers.terminal_growth, PCT2, "Config"),
         ("Risk-free rate", r.wacc.risk_free, PCT2, "Config"),
@@ -133,10 +147,14 @@ def build_excel(result, out_path: str | Path) -> Path:
         ("Cost of debt (pre-tax)", r.wacc.cost_of_debt_pretax, PCT2, r.wacc.cost_of_debt_source),
         ("Gross debt for WACC weights", r.wacc.debt_value, NUM, "Latest balance sheet"),
         ("Mid-year convention (1 = yes)", 1 if cfg.assumptions.mid_year_convention else 0, "0", "Config"),
+        ("Years from FY-end to valuation date", r.dcf.valuation_offset, "0.000",
+         f"Valuation date {_d(r.valuation_date)}; last fiscal year-end {_d(r.fiscal_year_end)}"),
+        ("Years from FY-end to balance sheet", r.dcf.balance_offset, "0.000",
+         f"Net debt as at {bs_date}: year-1 cash flow before that date is already in net debt"),
         ("Terminal method (1 = value driver)", 1 if r.dcf.terminal_method == "value_driver" else 0, "0",
          "0 = Gordon growth on FCF; 1 = NOPAT x (1 - g/RONIC) / (WACC - g)"),
         ("RONIC (value driver only)", r.dcf.ronic if r.dcf.ronic else r.wacc.wacc + 0.02, PCT2, "Return on new invested capital"),
-        (f"Expected dividend per share ({r.price_currency})", r.recommendation.dps, NUM2, "Last year's cash dividend per share"),
+        (f"Expected dividend per share ({r.price_currency})", r.recommendation.dps, NUM2, _cap(r.dps_source or "Last year's cash dividend per share")),
         ("Roll-forward months", r.recommendation.horizon_months, "0", "12 = twelve-month target price; 0 = fair value today"),
         ("Target price rounding", cfg.recommendation.tp_rounding, NUM2, "Config"),
         ("Weight on DCF in fair value", cfg.recommendation.blend_dcf_weight if (cfg.recommendation.tp_method == "blend" and r.recommendation.multiples_value) else 1.0,
@@ -322,6 +340,14 @@ def build_excel(result, out_path: str | Path) -> Path:
         (ws_w.link if kind == "link" else ws_w.formula)(f"B{i}", f, fmt, bold=label in {"Cost of equity", "WACC"})
     ws_w.cell("C6", r.wacc.beta_source, italic=True, color="595959")
     WACC_REF = "WACC!$B$17"
+    pb = r.wacc.peer_beta
+    if pb is not None:
+        ws_w.cell("A19", "Cross-check: bottom-up beta from the peer group (Hamada, tax at the corporate rate)", bold=True, color=NAVY)
+        pb_rows = [("Median unlevered peer beta", pb.unlevered_median, NUM2), (f"Relevered at the target's D/E of {pb.target_debt_to_equity:.2f}", pb.relevered_raw, NUM2),
+                   ("Blume-adjusted (compare with B6)", pb.relevered_adjusted, NUM2), ("Peers with a usable beta", pb.n, "0")]
+        for i_b, (lab, v, fmt) in enumerate(pb_rows, start=20):
+            ws_w.label(f"A{i_b}", lab)
+            ws_w.input(f"B{i_b}", v, fmt)
 
     # ========================================================================= DCF
     ws_d.title(f"{r.name} – DCF valuation ({units})", "Unlevered FCF discounted at WACC; Gordon growth terminal value.")
@@ -331,15 +357,27 @@ def build_excel(result, out_path: str | Path) -> Path:
         ws_d.header(f"{col(2 + j)}4", f"{y}E")
         ws_d.ws.column_dimensions[col(2 + j)].width = 12
     ws_d.label("A5", "Unlevered FCF", bold=True)
-    ws_d.label("A6", "Discount period (years)")
+    ws_d.label("A6", "Discount period (years from valuation date)")
     ws_d.label("A7", "Discount factor")
-    ws_d.label("A8", "PV of FCF", bold=True)
+    ws_d.label("A8", "PV of FCF (year 1: after the balance-sheet date)", bold=True)
+    MID = IN["Mid-year convention (1 = yes)"]
+    V_OFF, B_OFF = IN["Years from FY-end to valuation date"], IN["Years from FY-end to balance sheet"]
     for j in range(n_f):
         c = col(2 + j)
         ws_d.link(f"{c}5", f"=Forecast!{col(3 + j)}{FR['Unlevered FCF']}", NUM, bold=True)
-        ws_d.formula(f"{c}6", f"={j + 1}-0.5*{IN['Mid-year convention (1 = yes)']}", NUM1)
+        if j == 0:  # stub year: only the part after the balance-sheet date, discounted from the valuation date
+            ws_d.formula(f"{c}6", f"=IF({MID}=1,(1+{B_OFF})/2,1)-{V_OFF}", "0.000")
+            ws_d.formula(f"{c}8", f"={c}5*(1-{B_OFF})*{c}7", NUM, bold=True)
+        else:
+            ws_d.formula(f"{c}6", f"={j + 1}-{V_OFF}-0.5*{MID}", "0.000")
+            ws_d.formula(f"{c}8", f"={c}5*{c}7", NUM, bold=True)
         ws_d.formula(f"{c}7", f"=1/(1+{WACC_REF})^{c}6", "0.000")
-        ws_d.formula(f"{c}8", f"={c}5*{c}7", NUM, bold=True)
+    PERIODS = f"DCF!$B$6:${col(1 + n_f)}$6"
+
+    def ev_expr(w: str, g: str, fcf_rng: str, fcf_first: str, tcf_expr: str) -> str:
+        """Enterprise value at the valuation date for discount rate ``w`` (same arithmetic as ``dcf.value_per_share``)."""
+        return (f"SUMPRODUCT({fcf_rng},(1+{w})^(-{PERIODS}))-{fcf_first}*{B_OFF}*(1+{w})^(-DCF!$B$6)"
+                f"+{tcf_expr}/({w}-{g})/(1+{w})^({n_f}-{V_OFF})")
     METHOD, RONIC = IN["Terminal method (1 = value driver)"], IN["RONIC (value driver only)"]
     NOPAT_N = f"Forecast!${last_f}${FR['NOPAT']}"
     MONTHS, DPS = IN["Roll-forward months"], IN[f"Expected dividend per share ({r.price_currency})"]
@@ -354,7 +392,7 @@ def build_excel(result, out_path: str | Path) -> Path:
         ("WACC", f"={WACC_REF}", PCT2, False),
         ("Terminal cash flow (year N+1)", f"={tcf('B11')}", NUM, False),
         ("Terminal value", "=B13/(B12-B11)", NUM, True),
-        ("PV of terminal value", f"=B14/(1+B12)^{n_f}", NUM, True),
+        ("PV of terminal value", f"=B14/(1+B12)^({n_f}-{V_OFF})", NUM, True),
         ("Enterprise value", "=B10+B15", NUM, True),
         ("Less: net debt", f"=-{IN['Net debt']}", NUM, False),
         ("Less: minority interest", f"=-{IN['Minority interest']}", NUM, False),
@@ -390,27 +428,29 @@ def build_excel(result, out_path: str | Path) -> Path:
         c = col(2 + j)
         ws_d.formula(f"{c}{s0}", f"={WACC_REF}+({j - k})*{cfg.recommendation.sensitivity_wacc_step}", PCT2, bold=True, fill=GREY_FILL, align="center")
     fcf_range = f"$B$5:${col(1 + n_f)}$5"
-    mid = IN["Mid-year convention (1 = yes)"]
     for i, _g in enumerate(growths):
         rr = s0 + 1 + i
         ws_d.formula(f"A{rr}", f"={IN['Terminal growth']}+({i - k})*{cfg.recommendation.sensitivity_growth_step}", PCT2, bold=True, fill=GREY_FILL, align="center")
         for j in range(len(waccs)):
             c = col(2 + j)
             w_ref, g_ref = f"{c}${s0}", f"$A{rr}"
-            formula = (f"=IF({w_ref}<={g_ref},\"n.m.\",(NPV({w_ref},{fcf_range})*(1+{w_ref})^(0.5*{mid})"
-                       f"+{tcf(g_ref)}/({w_ref}-{g_ref})/(1+{w_ref})^{n_f}-{IN['Net debt']}-{IN['Minority interest']})/{SH}/{FX})")
+            formula = (f"=IF({w_ref}<={g_ref},\"n.m.\",({ev_expr(w_ref, g_ref, fcf_range, '$B$5', tcf(g_ref))}"
+                       f"-{IN['Net debt']}-{IN['Minority interest']})/{SH}/{FX})")
             ws_d.formula(f"{c}{rr}", formula, NUM1, bold=(i == k and j == k), fill=YELLOW_FILL if (i == k and j == k) else None, align="center")
     ws_d.ws.freeze_panes = "B5"
 
     # ======================================================================= Peers
-    ws_p.title("Peer multiples", "Multiples computed from last reported fiscal year; EV on the same lease basis as the target company.")
-    ws_p.widths({"A": 24, "B": 12, "C": 18, "D": 14, "E": 14, "F": 12, "G": 12, "H": 12, "I": 12, "J": 12, "K": 12, "L": 12})
-    headers = ["Company", "Ticker", "Group", f"Market cap ({units})", f"EV ({units})", "Rev. growth", "EBITDA margin", "EV/Sales", "EV/EBITDA", "EV/EBIT", "P/E", "P/E (fwd)"]
+    ws_p.title("Peer multiples", "LTM figures where the quarters are reported (else the last fiscal year); EV = market cap today + latest net debt, "
+                                 "same lease basis as the target company; P/E on trailing twelve-month EPS.")
+    ws_p.widths({"A": 24, "B": 12, "C": 18, "D": 14, "E": 14, **{col(k): 12 for k in range(6, 21)}})
+    headers = ["Company", "Ticker", "Group", f"Market cap ({units})", f"EV ({units})", "Rev. growth", "EBITDA margin", "EV/Sales", "EV/EBITDA", "EV/EBIT", "P/E", "P/E (NTM)",
+               "EV/Sales (NTM)", "EV/EBITDA (NTM*)", "P/E (FY0)", "P/E (FY1)", "Growth FY1", "EPS growth", "PEG", "FCF yield", "Div. yield"]
     for j, hname in enumerate(headers):
         ws_p.header(f"{col(1 + j)}4", hname, align="left" if j < 3 else "center")
     tbl = r.comps.table
-    keys = ["name", "ticker", "group", "market_cap", "ev", "revenue_growth", "ebitda_margin", "ev_sales", "ev_ebitda", "ev_ebit", "pe", "fwd_pe"]
-    fmts = [None, None, None, NUM, NUM, PCT, PCT, MULT, MULT, MULT, MULT, MULT]
+    keys = ["name", "ticker", "group", "market_cap", "ev", "revenue_growth", "ebitda_margin", "ev_sales", "ev_ebitda", "ev_ebit", "pe", "fwd_pe",
+            "ev_sales_ntm", "ev_ebitda_ntm", "pe_fy0", "pe_fy1", "growth_fwd", "eps_growth", "peg", "fcf_yield", "div_yield"]
+    fmts = [None, None, None, NUM, NUM, PCT, PCT, MULT, MULT, MULT, MULT, MULT, MULT, MULT, MULT, MULT, PCT, PCT, NUM2, PCT, PCT]
     first_peer, last_peer = 5, 4 + len(tbl)
     for i, (_, row) in enumerate(tbl.iterrows(), start=5):
         for j, (key, fmt) in enumerate(zip(keys, fmts)):
@@ -422,7 +462,7 @@ def build_excel(result, out_path: str | Path) -> Path:
     for s_i, (label, fn) in enumerate([("Average", "AVERAGE"), ("Median", "MEDIAN"), ("25th percentile", "QUARTILE"), ("75th percentile", "QUARTILE")]):
         rr = stat_start + s_i
         ws_p.label(f"A{rr}", label, bold=True)
-        for j in range(5, 12):
+        for j in range(5, len(headers)):
             c = col(1 + j)
             rng = f"{c}{first_peer}:{c}{last_peer}"
             if fn == "QUARTILE":
@@ -440,14 +480,50 @@ def build_excel(result, out_path: str | Path) -> Path:
     ws_p.formula(f"B{cb + 1}", f"={PX}*{SH}", NUM)
     ws_p.label(f"A{cb + 2}", "Enterprise value")
     ws_p.formula(f"B{cb + 2}", f"=B{cb + 1}+{IN['Net debt']}+{IN['Minority interest']}", NUM)
-    ws_p.label(f"A{cb + 3}", "LTM revenue")
-    ws_p.link(f"B{cb + 3}", f"=Historicals!{last_h}{HR['Revenue']}", NUM)
-    ws_p.label(f"A{cb + 4}", "LTM EBITDA")
-    ws_p.link(f"B{cb + 4}", f"=Historicals!{last_h}{HR['EBITDA']}", NUM)
-    ws_p.label(f"A{cb + 5}", "LTM EBIT")
-    ws_p.link(f"B{cb + 5}", f"=Historicals!{last_h}{HR['EBIT']}", NUM)
-    ws_p.label(f"A{cb + 6}", "LTM EPS")
-    ws_p.link(f"B{cb + 6}", f"=Historicals!{last_h}{HR['Diluted EPS']}", NUM2)
+    basis = latest.basis if latest is not None else f"FY{r.last_actual_year}"
+    how = latest.note if (latest is not None and latest.is_ltm) else "last fiscal year"
+    eps_ltm = r.comps.company.get("pe")
+    eps_ltm = (r.price / eps_ltm) if eps_ltm else None  # trailing EPS in the listing currency, as used for the P/E
+    if latest is not None and latest.is_ltm:
+        metric_rows = [(f"Revenue ({basis})", latest.revenue), (f"EBITDA ({basis})", latest.ebitda), (f"EBIT ({basis})", latest.ebit)]
+        for i_m, (lab, v) in enumerate(metric_rows):
+            ws_p.label(f"A{cb + 3 + i_m}", lab)
+            ws_p.input(f"B{cb + 3 + i_m}", v, NUM)
+    else:
+        for i_m, (lab, key) in enumerate([("Revenue", "Revenue"), ("EBITDA", "EBITDA"), ("EBIT", "EBIT")]):
+            ws_p.label(f"A{cb + 3 + i_m}", f"{lab} ({basis})")
+            ws_p.link(f"B{cb + 3 + i_m}", f"=Historicals!{last_h}{HR[key]}", NUM)
+    ws_p.label(f"A{cb + 6}", f"EPS, trailing 12 months ({r.currency})")
+    if eps_ltm:
+        ws_p.input(f"B{cb + 6}", float(eps_ltm) * r.fx_reporting_per_listing, NUM2)  # reporting currency, like the Historicals EPS
+    else:
+        ws_p.link(f"B{cb + 6}", f"=Historicals!{last_h}{HR['Diluted EPS']}", NUM2)
+    ws_p.cell(f"A{cb + 8}", f"Income figures: {how}. Net debt: balance sheet {bs_date}. "
+                            "EPS: Yahoo Finance trailing twelve months, the same basis as the peers' P/E. "
+                            "* EV/EBITDA (NTM) = EV over NTM consensus revenue at the LTM margin (no EBITDA consensus on Yahoo).", italic=True, color="595959")
+    # ---- regression of EV/EBITDA on expected growth and margin (engine OLS; coefficients as inputs, fitted value live)
+    reg = r.comps.regression
+    REG: dict[str, str] = {}
+    if reg is not None:
+        rb = cb + 10
+        ws_p.cell(f"A{rb}", "EV/EBITDA regression on the peers above (engine OLS with an intercept; coefficients are inputs, the fitted value is live)",
+                  bold=True, color=NAVY)
+        reg_rows = [("Intercept", reg.intercept, NUM2), ("Coefficient: expected revenue growth", reg.coefficients.get("growth_reg", 0.0), NUM2),
+                    ("Coefficient: EBITDA margin", reg.coefficients.get("ebitda_margin", 0.0), NUM2), ("R²", reg.r2, NUM2),
+                    ("Residual standard deviation (x)", reg.resid_std, NUM2), ("Peers in the regression", reg.n, "0"),
+                    (f"{cfg.display_short} expected revenue growth", reg.target_inputs.get("growth_reg", 0.0), PCT)]
+        for i_r, (lab, v, fmt) in enumerate(reg_rows, start=rb + 1):
+            ws_p.label(f"A{i_r}", lab)
+            ws_p.input(f"B{i_r}", v, fmt)
+        ws_p.label(f"A{rb + 8}", f"{cfg.display_short} EBITDA margin (LTM)")
+        ws_p.formula(f"B{rb + 8}", f"=IF(B{cb + 3}>0,B{cb + 4}/B{cb + 3},0)", PCT)
+        ws_p.label(f"A{rb + 9}", "Fitted EV/EBITDA", bold=True)
+        ws_p.formula(f"B{rb + 9}", f"=B{rb + 1}+B{rb + 2}*B{rb + 7}+B{rb + 3}*B{rb + 8}", MULT, bold=True)
+        ws_p.label(f"A{rb + 10}", f"Regression-implied value per share ({r.price_currency})", bold=True)
+        ws_p.formula(f"B{rb + 10}", f"=IF(B{cb + 4}<=0,\"\",(B{rb + 9}*B{cb + 4}-{IN['Net debt']}-{IN['Minority interest']})/{SH}/{FX})", NUM2, bold=True)
+        ws_p.cell(f"C{rb + 9}", f"R² {reg.r2:.2f}: " + ("below 0.15, so the fit is reported but not used as a valuation anchor" if reg.r2 < 0.15 else
+                                                         "used as a football-field bar (±1 residual standard deviation)"), italic=True, color="595959")
+        REG = {"fitted": f"Peers!$B${rb + 9}", "std": f"Peers!$B${rb + 5}", "ebitda": f"Peers!$B${cb + 4}"}
     ws_p.header(f"D{cb}", "Multiple", align="left")
     ws_p.header(f"E{cb}", cfg.display_short)
     ws_p.header(f"F{cb}", "Peer median")
@@ -487,6 +563,10 @@ def build_excel(result, out_path: str | Path) -> Path:
             lo = f"=Peers!{mcol}{p25_row}*Peers!{metric_ref}/{FX}"
             hi = f"=Peers!{mcol}{p75_row}*Peers!{metric_ref}/{FX}"
         ff_rows.append((f"{label} (peer 25th–75th pct)", lo, hi, False))
+    if REG and any(b.label.startswith("EV/EBITDA regression") for b in r.football):
+        bridge = f"-{IN['Net debt']}-{IN['Minority interest']})/{SH}/{FX}"
+        ff_rows.append(("EV/EBITDA regression (growth, margin ±1σ)", f"=(({REG['fitted']}-{REG['std']})*{REG['ebitda']}{bridge}",
+                        f"=(({REG['fitted']}+{REG['std']})*{REG['ebitda']}{bridge}", False))
     for i, (label, lo, hi, is_input) in enumerate(ff_rows, start=5):
         ws_ff.label(f"A{i}", label)
         (ws_ff.input if is_input else ws_ff.formula)(f"B{i}", lo, NUM2)
@@ -531,7 +611,6 @@ def build_excel(result, out_path: str | Path) -> Path:
     n_sc = len(sc_list)
     block0 = 5 + n_sc + 4
     block_h = 15
-    mid_ref = IN["Mid-year convention (1 = yes)"]
     for si, sc in enumerate(sc_list):
         row = 5 + si
         b = block0 + si * block_h  # first row of this scenario's forecast block
@@ -573,7 +652,7 @@ def build_excel(result, out_path: str | Path) -> Path:
         fcf_rng = f"$C${r_fcf}:${last_c}${r_fcf}"
         tcf_sc = tcf(f"$H${row}", fcf_n=f"${last_c}${r_fcf}", nopat_n=f"${last_c}${r_nopat}")
         ws_s.label(f"A{b + 12}", "Enterprise value")
-        ws_s.formula(f"B{b + 12}", f"=NPV($G${row},{fcf_rng})*(1+$G${row})^(0.5*{mid_ref})+{tcf_sc}/($G${row}-$H${row})/(1+$G${row})^{n_f}", NUM)
+        ws_s.formula(f"B{b + 12}", "=" + ev_expr(f"$G${row}", f"$H${row}", fcf_rng, f"$C${r_fcf}", tcf_sc), NUM)
         ws_s.label(f"A{b + 13}", f"Value per share ({r.price_currency})", bold=True)
         ws_s.formula(f"B{b + 13}", f"=(B{b + 12}-{IN['Net debt']}-{IN['Minority interest']})/{SH}/{FX}", NUM2, bold=True)
     wrow = 5 + n_sc

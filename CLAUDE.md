@@ -1,15 +1,16 @@
 # Equity Research Engine – working notes for Claude
 
 Python package `eqr` (src layout). Pipeline: `retrieve/` (yfinance + disk cache) -> `analyze/` (lease-adjusted
-historicals, forecast, WACC, DCF, scenarios, reverse DCF, comps, recommendation) -> `create/` (python-pptx deck,
-openpyxl model, Chart.js dashboard). Case assumptions live in `configs/<TICKER>.yaml`.
+historicals, LTM and latest balance sheet, forecast, WACC incl. bottom-up beta, DCF at the valuation date, scenarios,
+reverse DCF, value drivers, comps, consensus, recommendation) -> `create/` (python-pptx deck, openpyxl model, Chart.js
+dashboard, one-page HTML/PDF note). Case assumptions live in `configs/<TICKER>.yaml`.
 
 ## Commands
 
 ```bash
 python -m pytest -q && python -m ruff check .   # offline tests (synthetic snapshot, mocked Claude client) + lint
 eqr analyze SATS.OL                      # valuation summary, no files
-eqr run SATS.OL --render --cache-ttl 720 # full outputs + slide PNGs (PowerPoint COM on Windows)
+eqr run SATS.OL --render --pdf --cache-ttl 720 # full outputs, slide PNGs (PowerPoint COM), deck + note PDFs (Edge)
 eqr screen SATS.OL KID.OL BOUV.OL MOWI.OL
 ```
 
@@ -36,3 +37,17 @@ eqr screen SATS.OL KID.OL BOUV.OL MOWI.OL
 - Before trusting a modelling change, re-run the sweep idea: many tickers with default configs, look for crashes, negative
   values and extreme upsides. Sector refusals and cautions live in `src/eqr/errors.py`.
 - Do not commit or push unless asked.
+- Valuation date: the DCF is discounted to the run date (stub period). Anything that pins numbers must set
+  `assumptions.valuation_date` (the golden test uses the fiscal year-end); otherwise values drift by the day.
+- The stub arithmetic lives in three places that must agree: `dcf.discount_periods` / `value_per_share`, the Excel `ev_expr`
+  helper (DCF rows 6-8, sensitivity grid, scenario blocks) and `dcfValue` in the dashboard JavaScript.
+- Tests must stay offline: `tests/conftest.py` stubs `pipeline.fetch_extras` (quarterly balance, calendar, revisions)
+  for every test; stub any new Yahoo call the same way.
+- Peers: EV is market cap x FX(listing -> reporting) + latest net debt; forward multiples are calendarised to NTM per fiscal
+  year (`analyze/multiples.py`). The regression is an anchor only with R² >= `recommendation.MIN_REGRESSION_R2`.
+- `coverage/history.csv` is the coverage log (committed); `eqr site` builds `site/` (git-ignored) from `examples/` + the log,
+  and the Pages workflow publishes it. Refresh `examples/` and the log together.
+- Yahoo's estimate table can be in the listing or the reporting currency per company: `multiples.estimate_currency` decides
+  from the year-ago revenue; `trailingEps`/`forwardEps`/`dividendRate` are in the listing currency (pounds, not pence).
+- The nowcast (`analyze/nowcast.py`) only moves year-1 growth and margin; sweep scripts live in the session scratchpad,
+  not the repo – re-create `sweep_v05.py` from CLAUDE.md's sweep rule when needed (60 tickers, cached snapshots, ~3 min).

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "equity-research-engine"
-version = "0.3.0"
+version = "0.6.0"
 description = "Automated sell-side style equity research: retrieve market data, build a DCF and peer-multiple model, and generate an investment deck, an Excel model and an interactive dashboard."
 readme = "README.md"
 requires-python = ">=3.11"
